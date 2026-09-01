@@ -2530,4 +2530,4 @@ st.caption(
     "Company validation + multi-query persona "
     "verification + technographic intelligence"
 )
-```
+
