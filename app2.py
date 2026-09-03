@@ -27,6 +27,9 @@ st.set_page_config(
 
 SERPER_URL = "https://google.serper.dev/search"
 BUILTWITH_URL = "https://api.builtwith.com/v23/api.json"
+SIGNALHIRE_BASE_URL = "https://www.signalhire.com/api/v1"
+SIGNALHIRE_SEARCH_URL = f"{SIGNALHIRE_BASE_URL}/candidate/search"
+SIGNALHIRE_CREDITS_URL = f"{SIGNALHIRE_BASE_URL}/credits"
 
 
 # ============================================================
@@ -92,6 +95,8 @@ DEFAULT_STATE = {
     "technology": {},
     "personas": pd.DataFrame(),
     "approved": pd.DataFrame(),
+    "signalhire_credits": None,
+    "signalhire_enriched": {},
 }
 
 for key, value in DEFAULT_STATE.items():
@@ -153,6 +158,40 @@ st.markdown(
         border-radius: 12px;
         text-align: center;
         background: white;
+    }
+
+    .contact-badge {
+        display: inline-block;
+        padding: 4px 10px;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 500;
+        margin-right: 6px;
+        margin-bottom: 6px;
+    }
+
+    .badge-work-email {
+        background-color: #dbeafe;
+        color: #1e40af;
+        border: 1px solid #bfdbfe;
+    }
+
+    .badge-personal-email {
+        background-color: #f3e8ff;
+        color: #6b21a8;
+        border: 1px solid #e9d5ff;
+    }
+
+    .badge-phone {
+        background-color: #dcfce7;
+        color: #15803d;
+        border: 1px solid #bbf7d0;
+    }
+
+    .badge-role {
+        background-color: #fef3c7;
+        color: #92400e;
+        border: 1px solid #fde68a;
     }
 
     </style>
@@ -232,6 +271,15 @@ def unique(values: List[str]) -> List[str]:
             result.append(value)
 
     return result
+
+
+def get_secret(key: str, default: str = "") -> str:
+    try:
+        if hasattr(st, "secrets") and key in st.secrets:
+            return str(st.secrets[key])
+    except Exception:
+        pass
+    return default
 
 
 def safe_json(data: Any) -> str:
@@ -654,6 +702,327 @@ def determine_solution_fit(
         )
 
     return fit
+
+
+# ============================================================
+# SIGNALHIRE
+# ============================================================
+
+def signalhire_get_credits(api_key: str) -> Optional[int]:
+    if not api_key:
+        return None
+    try:
+        res = requests.get(
+            SIGNALHIRE_CREDITS_URL,
+            headers={"apikey": api_key},
+            timeout=15,
+        )
+        if res.ok:
+            data = res.json()
+            return data.get("credits")
+    except Exception:
+        pass
+    return None
+
+
+def signalhire_enrich_profiles(
+    linkedin_urls: List[str],
+    api_key: str,
+    without_contacts: bool = False,
+    timeout: int = 60,
+) -> List[Dict[str, Any]]:
+    """
+    Enriches candidates synchronously using SignalHire's withoutWaterfall mode.
+    Returns list of candidate outcome objects:
+    [{'item': '...', 'status': 'success'|'failed'|'credits_are_over', 'candidate': {...}}]
+    """
+    if not api_key:
+        raise RuntimeError("SignalHire API key is missing.")
+
+    clean_urls = unique([clean(u) for u in linkedin_urls if clean(u)])
+    if not clean_urls:
+        return []
+
+    headers = {
+        "apikey": api_key,
+        "Content-Type": "application/json",
+    }
+
+    payload: Dict[str, Any] = {
+        "items": clean_urls[:100],
+        "withoutWaterfall": True,
+    }
+    if without_contacts:
+        payload["withoutContacts"] = True
+
+    response = requests.post(
+        SIGNALHIRE_SEARCH_URL,
+        headers=headers,
+        json=payload,
+        timeout=timeout,
+    )
+
+    if not response.ok:
+        try:
+            err = response.json()
+        except Exception:
+            err = response.text
+        raise RuntimeError(f"SignalHire API HTTP {response.status_code}: {err}")
+
+    try:
+        data = response.json()
+        if isinstance(data, list):
+            return data
+        return []
+    except Exception as exc:
+        raise RuntimeError(f"Failed to parse SignalHire JSON response: {exc}")
+
+
+def parse_signalhire_candidate(item: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Parses a single SignalHire item result into structured persona details.
+    """
+    if not isinstance(item, dict):
+        return {}
+
+    status = clean(item.get("status"))
+    url = clean(item.get("item"))
+
+    if status != "success":
+        return {
+            "url": url,
+            "status": status,
+            "error": f"SignalHire status: {status}",
+            "full_name": "",
+            "headline": "",
+            "summary": "",
+            "location": "",
+            "skills": [],
+            "current_position": "",
+            "current_company": "",
+            "current_roles": [],
+            "past_roles": [],
+            "work_emails": [],
+            "personal_emails": [],
+            "all_emails": [],
+            "work_phones": [],
+            "mobile_phones": [],
+            "all_phones": [],
+            "raw_candidate": {},
+        }
+
+    candidate = item.get("candidate") or {}
+
+    full_name = clean(candidate.get("fullName"))
+    headline = clean(candidate.get("headLine"))
+    summary = clean(candidate.get("summary"))
+
+    # Locations
+    locations = candidate.get("locations") or []
+    loc_names = [clean(l.get("name")) for l in locations if isinstance(l, dict) and l.get("name")]
+    location_str = ", ".join(loc_names)
+
+    # Skills
+    skills = candidate.get("skills") or []
+    skills_list = [clean(s) for s in skills if clean(s)]
+
+    # Contacts
+    contacts = candidate.get("contacts") or []
+    work_emails = []
+    personal_emails = []
+    other_emails = []
+    work_phones = []
+    mobile_phones = []
+    other_phones = []
+
+    for c in contacts:
+        if not isinstance(c, dict):
+            continue
+        c_type = clean(c.get("type")).lower()
+        val = clean(c.get("value"))
+        sub_type = clean(c.get("subType")).lower()
+        if not val:
+            continue
+
+        if c_type == "email":
+            if sub_type == "work":
+                work_emails.append(val)
+            elif sub_type == "personal":
+                personal_emails.append(val)
+            else:
+                other_emails.append(val)
+        elif c_type == "phone":
+            if "work" in sub_type:
+                work_phones.append(val)
+            elif "mobile" in sub_type:
+                mobile_phones.append(val)
+            else:
+                other_phones.append(val)
+
+    # Experience
+    experiences = candidate.get("experience") or []
+    current_roles = []
+    past_roles = []
+
+    for exp in experiences:
+        if not isinstance(exp, dict):
+            continue
+        pos = clean(exp.get("position"))
+        comp = clean(exp.get("company"))
+        is_cur = bool(exp.get("current", False))
+        started = clean(exp.get("started"))
+        exp_item = {
+            "position": pos,
+            "company": comp,
+            "current": is_cur,
+            "started": started,
+            "summary": clean(exp.get("summary")),
+            "industry": clean(exp.get("industry")),
+        }
+        if is_cur:
+            current_roles.append(exp_item)
+        else:
+            past_roles.append(exp_item)
+
+    cur_pos = current_roles[0]["position"] if current_roles else ""
+    cur_comp = current_roles[0]["company"] if current_roles else ""
+
+    return {
+        "url": url,
+        "status": "success",
+        "full_name": full_name,
+        "headline": headline,
+        "summary": summary,
+        "location": location_str,
+        "skills": skills_list,
+        "current_position": cur_pos,
+        "current_company": cur_comp,
+        "current_roles": current_roles,
+        "past_roles": past_roles,
+        "work_emails": unique(work_emails),
+        "personal_emails": unique(personal_emails),
+        "all_emails": unique(work_emails + personal_emails + other_emails),
+        "work_phones": unique(work_phones),
+        "mobile_phones": unique(mobile_phones),
+        "all_phones": unique(work_phones + mobile_phones + other_phones),
+        "raw_candidate": candidate,
+    }
+
+
+def apply_signalhire_enrichment(
+    df: pd.DataFrame,
+    enriched_results: List[Dict[str, Any]],
+    target_company: str,
+) -> pd.DataFrame:
+    """
+    Merges SignalHire profile & contact data into the persona DataFrame.
+    Improves verification accuracy using actual employment records.
+    """
+    if df.empty or not enriched_results:
+        return df
+
+    parsed_map = {}
+    for item in enriched_results:
+        parsed = parse_signalhire_candidate(item)
+        url = clean(parsed.get("url")).split("?")[0].rstrip("/").lower()
+        if url:
+            parsed_map[url] = parsed
+
+    new_cols = [
+        "Work Emails",
+        "Personal Emails",
+        "All Emails",
+        "Work Phones",
+        "Mobile Phones",
+        "All Phones",
+        "SignalHire Title",
+        "SignalHire Company",
+        "SignalHire Headline",
+        "SignalHire Skills",
+        "SignalHire Status",
+    ]
+    for col in new_cols:
+        if col not in df.columns:
+            df[col] = ""
+
+    norm_target = normalize_company_name(target_company)
+
+    for idx, row in df.iterrows():
+        ln_url = clean(row.get("LinkedIn")).split("?")[0].rstrip("/").lower()
+        if ln_url not in parsed_map:
+            continue
+
+        p = parsed_map[ln_url]
+        status = p.get("status")
+        df.at[idx, "SignalHire Status"] = status
+
+        if status == "success":
+            df.at[idx, "Work Emails"] = ", ".join(p.get("work_emails", []))
+            df.at[idx, "Personal Emails"] = ", ".join(p.get("personal_emails", []))
+            df.at[idx, "All Emails"] = ", ".join(p.get("all_emails", []))
+            df.at[idx, "Work Phones"] = ", ".join(p.get("work_phones", []))
+            df.at[idx, "Mobile Phones"] = ", ".join(p.get("mobile_phones", []))
+            df.at[idx, "All Phones"] = ", ".join(p.get("all_phones", []))
+
+            cur_pos = p.get("current_position", "")
+            cur_comp = p.get("current_company", "")
+            df.at[idx, "SignalHire Title"] = cur_pos
+            df.at[idx, "SignalHire Company"] = cur_comp
+            df.at[idx, "SignalHire Headline"] = p.get("headline", "")
+            df.at[idx, "SignalHire Skills"] = ", ".join(p.get("skills", [])[:10])
+
+            if p.get("full_name") and not clean(row.get("Name")):
+                df.at[idx, "Name"] = p.get("full_name")
+
+            # High-Accuracy Employment Verification
+            cur_roles = p.get("current_roles", [])
+            target_found_in_current = False
+            for r in cur_roles:
+                if norm_target in normalize_company_name(r.get("company", "")):
+                    target_found_in_current = True
+                    break
+
+            past_roles = p.get("past_roles", [])
+            target_found_in_past = False
+            for r in past_roles:
+                if norm_target in normalize_company_name(r.get("company", "")):
+                    target_found_in_past = True
+                    break
+
+            requested_persona = clean(row.get("Requested Persona"))
+            title_score_val = title_score(requested_persona, cur_pos or p.get("headline", ""))
+
+            if target_found_in_current:
+                df.at[idx, "Company Match"] = 100
+                df.at[idx, "Currentness Score"] = 100
+                if title_score_val >= 70:
+                    df.at[idx, "Verification Score"] = 98.0
+                    df.at[idx, "Verification Status"] = "VERIFIED"
+                    df.at[idx, "Verification Reason"] = (
+                        f"Verified via SignalHire live records: Currently employed as '{cur_pos}' at '{cur_comp}'."
+                    )
+                else:
+                    df.at[idx, "Verification Score"] = 80.0
+                    df.at[idx, "Verification Status"] = "HIGH CONFIDENCE"
+                    df.at[idx, "Verification Reason"] = (
+                        f"SignalHire confirms active employment at '{cur_comp}', title is '{cur_pos}'."
+                    )
+            elif target_found_in_past and not target_found_in_current:
+                df.at[idx, "Currentness Score"] = 0
+                df.at[idx, "Verification Score"] = 20.0
+                df.at[idx, "Verification Status"] = "REJECTED"
+                df.at[idx, "Verification Reason"] = (
+                    f"SignalHire records show person has left {target_company} (currently at '{cur_comp or 'Other'}')."
+                )
+            elif cur_comp and norm_target not in normalize_company_name(cur_comp):
+                df.at[idx, "Company Match"] = 20
+                df.at[idx, "Verification Score"] = 25.0
+                df.at[idx, "Verification Status"] = "REJECTED"
+                df.at[idx, "Verification Reason"] = (
+                    f"SignalHire records indicate person is currently at '{cur_comp}', not '{target_company}'."
+                )
+
+    return df
 
 
 # ============================================================
@@ -1559,7 +1928,7 @@ with st.sidebar:
 
     serper_key = st.text_input(
         "Serper API Key",
-        value=st.secrets.get(
+        value=get_secret(
             "SERPER_API_KEY",
             "",
         ),
@@ -1568,12 +1937,29 @@ with st.sidebar:
 
     builtwith_key = st.text_input(
         "BuiltWith API Key",
-        value=st.secrets.get(
+        value=get_secret(
             "BUILTWITH_API_KEY",
             "",
         ),
         type="password",
     )
+
+    signalhire_key = st.text_input(
+        "SignalHire API Key",
+        value=get_secret(
+            "SIGNALHIRE_API_KEY",
+            "202.aBvCsev0gnhPuyBqigoXHS1BfiuZ",
+        ),
+        type="password",
+    )
+
+    if signalhire_key:
+        credits_left = signalhire_get_credits(signalhire_key)
+        if credits_left is not None:
+            st.session_state.signalhire_credits = credits_left
+            st.success(f"💳 SignalHire: **{credits_left}** credits left")
+        else:
+            st.warning("⚠️ Could not verify SignalHire API Key.")
 
     st.markdown(
         "### Persona Selection"
@@ -1604,11 +1990,25 @@ with st.sidebar:
         5,
     )
 
-    st.info(
-        "Zintlr is intentionally not required "
-        "for this version. Contact enrichment "
-        "is therefore not performed."
+    st.markdown(
+        "### ⚡ Enrichment Settings"
     )
+
+    auto_enrich = st.checkbox(
+        "Auto-enrich top verified candidates",
+        value=False,
+        help="Automatically calls SignalHire to retrieve emails, phones, and live company data.",
+    )
+
+    max_enrich = 0
+    if auto_enrich:
+        max_enrich = st.slider(
+            "Max profiles to auto-enrich",
+            1,
+            5,
+            2,
+            help="Limit credit consumption per run",
+        )
 
 
 # ============================================================
@@ -1899,6 +2299,40 @@ if st.button(
             )
         )
 
+        # ----------------------------------------------------
+        # SIGNALHIRE AUTO-ENRICHMENT (OPTION A)
+        # ----------------------------------------------------
+        if auto_enrich and signalhire_key and max_enrich > 0:
+            with st.spinner(
+                f"Enriching top {max_enrich} candidates via SignalHire..."
+            ):
+                candidate_targets = persona_df.head(max_enrich)
+                urls_to_enrich = [
+                    u for u in candidate_targets["LinkedIn"].tolist() if u
+                ]
+                if urls_to_enrich:
+                    try:
+                        enriched_items = signalhire_enrich_profiles(
+                            urls_to_enrich,
+                            signalhire_key,
+                            without_contacts=False,
+                        )
+                        persona_df = apply_signalhire_enrichment(
+                            persona_df,
+                            enriched_items,
+                            company_name,
+                        )
+                        persona_df = persona_df.sort_values(
+                            "Verification Score",
+                            ascending=False,
+                        ).reset_index(drop=True)
+
+                        rem_credits = signalhire_get_credits(signalhire_key)
+                        if rem_credits is not None:
+                            st.session_state.signalhire_credits = rem_credits
+                    except Exception as err:
+                        st.warning(f"SignalHire enrichment warning: {err}")
+
     st.session_state.personas = persona_df
 
     st.success(
@@ -2136,10 +2570,56 @@ if company_data:
 
         else:
 
+            # SignalHire interactive enrichment bar
+            if signalhire_key:
+                c_enr1, c_enr2 = st.columns([3, 1])
+                with c_enr1:
+                    rem = st.session_state.get("signalhire_credits")
+                    credit_msg = f" ({rem} credits available)" if rem is not None else ""
+                    st.caption(
+                        f"⚡ **SignalHire Enrichment**: Enrich profiles with verified work emails, phone numbers, and live employment data{credit_msg}."
+                    )
+                with c_enr2:
+                    if st.button("⚡ Enrich Top 3 via SignalHire", key="btn_enrich_personas", use_container_width=True):
+                        unenriched = persona_df[
+                            persona_df.get("SignalHire Status", "") != "success"
+                        ].head(3)
+                        urls = [u for u in unenriched["LinkedIn"].tolist() if u]
+                        if urls:
+                            with st.spinner(f"Enriching {len(urls)} profiles via SignalHire..."):
+                                try:
+                                    results = signalhire_enrich_profiles(
+                                        urls,
+                                        signalhire_key,
+                                        without_contacts=False,
+                                    )
+                                    updated_df = apply_signalhire_enrichment(
+                                        persona_df,
+                                        results,
+                                        company_data.get("company_name", ""),
+                                    )
+                                    st.session_state.personas = updated_df.sort_values(
+                                        "Verification Score",
+                                        ascending=False,
+                                    ).reset_index(drop=True)
+                                    rem_credits = signalhire_get_credits(signalhire_key)
+                                    if rem_credits is not None:
+                                        st.session_state.signalhire_credits = rem_credits
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Enrichment error: {e}")
+                        else:
+                            st.info("Top candidates are already enriched.")
+
             display_columns = [
                 "Name",
                 "Requested Persona",
                 "Search Title",
+                "SignalHire Title",
+                "SignalHire Company",
+                "Work Emails",
+                "Personal Emails",
+                "Work Phones",
                 "LinkedIn",
                 "Verification Score",
                 "Verification Status",
@@ -2310,12 +2790,84 @@ if company_data:
 
             else:
 
+                # SignalHire Bulk Action Bar
+                if signalhire_key:
+                    c_lead1, c_lead2 = st.columns([3, 1])
+                    with c_lead1:
+                        rem = st.session_state.get("signalhire_credits")
+                        credit_txt = f" ({rem} credits available)" if rem is not None else ""
+                        st.markdown(
+                            f"**⚡ Contact Enrichment**: Reveal verified work emails, personal emails, direct phone numbers, and full background via SignalHire{credit_txt}."
+                        )
+                    with c_lead2:
+                        un_enr = verified[
+                            verified.get("SignalHire Status", "") != "success"
+                        ]
+                        if not un_enr.empty:
+                            if st.button(
+                                f"⚡ Enrich {len(un_enr)} Verified",
+                                key="btn_enrich_verified_leads",
+                                use_container_width=True,
+                            ):
+                                urls = [u for u in un_enr["LinkedIn"].tolist() if u]
+                                with st.spinner(f"Enriching {len(urls)} candidates via SignalHire..."):
+                                    try:
+                                        results = signalhire_enrich_profiles(
+                                            urls,
+                                            signalhire_key,
+                                            without_contacts=False,
+                                        )
+                                        updated_df = apply_signalhire_enrichment(
+                                            persona_df,
+                                            results,
+                                            company_data.get("company_name", ""),
+                                        )
+                                        st.session_state.personas = updated_df.sort_values(
+                                            "Verification Score",
+                                            ascending=False,
+                                        ).reset_index(drop=True)
+                                        rem_credits = signalhire_get_credits(signalhire_key)
+                                        if rem_credits is not None:
+                                            st.session_state.signalhire_credits = rem_credits
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Enrichment error: {e}")
+                        else:
+                            st.success("All verified leads enriched!")
+
                 st.success(
                     f"{len(verified)} persona(s) "
                     "passed strict verification."
                 )
 
-                for _, row in verified.iterrows():
+                for idx, row in verified.iterrows():
+
+                    work_emails = clean(row.get("Work Emails", ""))
+                    personal_emails = clean(row.get("Personal Emails", ""))
+                    phones = clean(row.get("Work Phones", "")) or clean(row.get("All Phones", ""))
+                    sh_title = clean(row.get("SignalHire Title", ""))
+                    sh_company = clean(row.get("SignalHire Company", ""))
+                    skills = clean(row.get("SignalHire Skills", ""))
+
+                    contact_badges = []
+                    if work_emails:
+                        for em in work_emails.split(", "):
+                            if em.strip():
+                                contact_badges.append(f'<span class="contact-badge badge-work-email">📧 Work: {em.strip()}</span>')
+                    if personal_emails:
+                        for em in personal_emails.split(", "):
+                            if em.strip():
+                                contact_badges.append(f'<span class="contact-badge badge-personal-email">✉️ Personal: {em.strip()}</span>')
+                    if phones:
+                        for ph in phones.split(", "):
+                            if ph.strip():
+                                contact_badges.append(f'<span class="contact-badge badge-phone">📞 {ph.strip()}</span>')
+                    if sh_title and sh_company:
+                        contact_badges.append(f'<span class="contact-badge badge-role">💼 {sh_title} @ {sh_company}</span>')
+
+                    badges_html = " ".join(contact_badges)
+                    if badges_html:
+                        badges_html = f"<div style='margin: 8px 0;'>{badges_html}</div>"
 
                     st.markdown(
                         f"""
@@ -2335,8 +2887,8 @@ if company_data:
 
                         <br>
 
-                        <b>Search Title:</b>
-                        {row.get("Search Title", "")}
+                        <b>Title:</b>
+                        {row.get("SignalHire Title", "") or row.get("Search Title", "")}
 
                         <br>
 
@@ -2358,15 +2910,54 @@ if company_data:
                         <b>Solution Fit:</b>
                         {row.get("Solution Fit", "")}
 
+                        {f"<br><b>Skills:</b> {skills}" if skills else ""}
+
+                        {badges_html}
+
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
 
+                    # Per-candidate on-demand enrichment button if not yet enriched
+                    if signalhire_key and not contact_badges and row.get("LinkedIn"):
+                        if st.button(f"⚡ Enrich {row.get('Name', 'Profile')}", key=f"btn_single_enr_{idx}"):
+                            with st.spinner(f"Enriching {row.get('Name')} via SignalHire..."):
+                                try:
+                                    res = signalhire_enrich_profiles(
+                                        [row.get("LinkedIn")],
+                                        signalhire_key,
+                                        without_contacts=False,
+                                    )
+                                    up_df = apply_signalhire_enrichment(
+                                        persona_df,
+                                        res,
+                                        company_data.get("company_name", ""),
+                                    )
+                                    st.session_state.personas = up_df.sort_values(
+                                        "Verification Score",
+                                        ascending=False,
+                                    ).reset_index(drop=True)
+                                    rem_credits = signalhire_get_credits(signalhire_key)
+                                    if rem_credits is not None:
+                                        st.session_state.signalhire_credits = rem_credits
+                                    st.rerun()
+                                except Exception as err:
+                                    st.error(f"Enrichment error: {err}")
+
                 export_columns = [
                     "Name",
                     "Requested Persona",
                     "Search Title",
+                    "SignalHire Title",
+                    "SignalHire Company",
+                    "Work Emails",
+                    "Personal Emails",
+                    "All Emails",
+                    "Work Phones",
+                    "Mobile Phones",
+                    "All Phones",
+                    "SignalHire Skills",
                     "LinkedIn",
                     "Verification Score",
                     "Verification Status",
@@ -2382,7 +2973,7 @@ if company_data:
                 ]
 
                 st.download_button(
-                    "⬇️ Download Verified Personas",
+                    "⬇️ Download Verified Personas & Contacts (CSV)",
                     verified[
                         export_columns
                     ].to_csv(
@@ -2401,10 +2992,8 @@ if company_data:
                 )
 
                 st.info(
-                    "Contact enrichment is intentionally "
-                    "not included until a person-level "
-                    "enrichment provider such as Zintlr "
-                    "is configured."
+                    "Contact enrichment is powered by SignalHire API. "
+                    "Verified candidates display live emails, phone numbers, and ground-truth employment data."
                 )
 
 
