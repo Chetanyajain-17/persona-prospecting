@@ -1099,7 +1099,44 @@ def company_score(
 
     return 0
 
+def is_company_match(
+    company: str,
+    title: str,
+    snippet: str,
+) -> bool:
 
+    target = normalize_company_name(company)
+
+    evidence = normalize_company_name(
+        f"{title} {snippet}"
+    )
+
+    if not target:
+        return False
+
+    # Exact normalized company name
+    if target in evidence:
+        return True
+
+    # Compare individual words
+    target_words = set(target.split())
+    evidence_words = set(evidence.split())
+
+    if not target_words:
+        return False
+
+    overlap = len(
+        target_words & evidence_words
+    )
+
+    ratio = overlap / len(target_words)
+
+    # Require ALL words for 2-word+ company names
+    if len(target_words) >= 2:
+        return overlap == len(target_words)
+
+    # Single-word company
+    return ratio >= 1.0
 # ============================================================
 # LOCATION SCORE
 # ============================================================
