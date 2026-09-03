@@ -282,6 +282,41 @@ def get_secret(key: str, default: str = "") -> str:
     return default
 
 
+def is_date_in_past(date_str: Any) -> bool:
+    """
+    Returns True if an end date is provided and has already passed.
+    Returns False for None, empty, 'present', 'current', 'ongoing', or future dates.
+    """
+    if not date_str:
+        return False
+    d = clean(date_str).lower()
+    if not d or d in {"present", "current", "now", "ongoing", "none", "null"}:
+        return False
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(d.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        if dt.tzinfo is None:
+            now = datetime.now()
+        return dt < now
+    except Exception:
+        pass
+    years = re.findall(r"\b(19\d\d|20\d\d)\b", d)
+    if years:
+        from datetime import datetime
+        end_year = int(years[-1])
+        now_year = datetime.now().year
+        if end_year < now_year:
+            return True
+        elif end_year == now_year:
+            months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+            for idx, m in enumerate(months, start=1):
+                if m in d:
+                    if idx < datetime.now().month:
+                        return True
+    return False
+
+
 def safe_json(data: Any) -> str:
 
     try:
@@ -871,15 +906,21 @@ def parse_signalhire_candidate(item: Dict[str, Any]) -> Dict[str, Any]:
         comp = clean(exp.get("company"))
         is_cur = bool(exp.get("current", False))
         started = clean(exp.get("started"))
+        ended = clean(exp.get("ended"))
+        is_ended = is_date_in_past(ended) or (not is_cur and bool(ended))
+        is_active = is_cur and not is_ended and (not ended or ended.lower() in {"present", "current", "now", "ongoing"})
+
         exp_item = {
             "position": pos,
             "company": comp,
             "current": is_cur,
+            "is_active": is_active,
             "started": started,
+            "ended": ended,
             "summary": clean(exp.get("summary")),
             "industry": clean(exp.get("industry")),
         }
-        if is_cur:
+        if is_active:
             current_roles.append(exp_item)
         else:
             past_roles.append(exp_item)
@@ -909,6 +950,114 @@ def parse_signalhire_candidate(item: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def validate_signalhire_experiences(
+    experiences: List[Dict[str, Any]],
+    target_company: str,
+    requested_persona: str,
+) -> Dict[str, Any]:
+    """
+    Strict ground-truth validation:
+    Only accepts candidates presently working at target organisation.
+    Rejects all former employees whose employment has ended.
+    """
+    norm_target = normalize_company_name(target_company)
+    if not norm_target or not experiences:
+        return {
+            "status": "REJECTED",
+            "score": 0.0,
+            "reason": f"No experience records found for '{target_company}'.",
+            "current_position": "",
+            "current_company": "",
+        }
+
+    target_active_roles = []
+    target_past_roles = []
+    other_active_roles = []
+    other_past_roles = []
+
+    for exp in experiences:
+        if not isinstance(exp, dict):
+            continue
+        comp = clean(exp.get("company", ""))
+        comp_norm = normalize_company_name(comp)
+        pos = clean(exp.get("position", ""))
+        is_cur_flag = bool(exp.get("current", False))
+        started = clean(exp.get("started", ""))
+        ended = clean(exp.get("ended", ""))
+
+        is_ended = is_date_in_past(ended) or (not is_cur_flag and bool(ended))
+        is_active = is_cur_flag and not is_ended and (not ended or ended.lower() in {"present", "current", "now", "ongoing"})
+
+        is_target = norm_target in comp_norm or comp_norm in norm_target
+
+        role_info = {
+            "company": comp,
+            "position": pos,
+            "current": is_cur_flag,
+            "started": started,
+            "ended": ended,
+            "is_active": is_active,
+        }
+
+        if is_target:
+            if is_active:
+                target_active_roles.append(role_info)
+            else:
+                target_past_roles.append(role_info)
+        else:
+            if is_active:
+                other_active_roles.append(role_info)
+            else:
+                other_past_roles.append(role_info)
+
+    # 1. Confirmed active ongoing role at target company
+    if target_active_roles:
+        primary_role = target_active_roles[0]
+        cur_pos = primary_role["position"]
+        cur_comp = primary_role["company"]
+        t_score = title_score(requested_persona, cur_pos)
+
+        if t_score >= 50:
+            return {
+                "status": "VERIFIED",
+                "score": 98.0,
+                "reason": f"CONFIRMED PRESENT EMPLOYEE: Live SignalHire records confirm active ongoing employment as '{cur_pos}' at '{cur_comp}' (no end date).",
+                "current_position": cur_pos,
+                "current_company": cur_comp,
+            }
+        else:
+            return {
+                "status": "REVIEW",
+                "score": 70.0,
+                "reason": f"ACTIVE AT TARGET (Title mismatch): Active at '{cur_comp}', but role '{cur_pos}' does not strongly match requested persona '{requested_persona}'.",
+                "current_position": cur_pos,
+                "current_company": cur_comp,
+            }
+
+    # 2. Target company only in past roles -> FORMER EMPLOYEE
+    if target_past_roles:
+        last_past = target_past_roles[0]
+        end_str = f" (ended {last_past.get('ended', 'past')[:10]})" if last_past.get("ended") else ""
+        cur_where = f"Currently employed at '{other_active_roles[0]['company']}'" if other_active_roles else "No longer with target organisation"
+        return {
+            "status": "REJECTED",
+            "score": 0.0,
+            "reason": f"FORMER EMPLOYEE: Employment at '{target_company}' ended{end_str}. {cur_where}. Excluded from results.",
+            "current_position": other_active_roles[0]["position"] if other_active_roles else "",
+            "current_company": other_active_roles[0]["company"] if other_active_roles else "",
+        }
+
+    # 3. Not found in experience records
+    cur_where = f"Currently at '{other_active_roles[0]['company']}'" if other_active_roles else "Not employed at target organisation"
+    return {
+        "status": "REJECTED",
+        "score": 0.0,
+        "reason": f"Target organisation '{target_company}' not found in candidate experience history. {cur_where}.",
+        "current_position": other_active_roles[0]["position"] if other_active_roles else "",
+        "current_company": other_active_roles[0]["company"] if other_active_roles else "",
+    }
+
+
 def apply_signalhire_enrichment(
     df: pd.DataFrame,
     enriched_results: List[Dict[str, Any]],
@@ -917,6 +1066,7 @@ def apply_signalhire_enrichment(
     """
     Merges SignalHire profile & contact data into the persona DataFrame.
     Improves verification accuracy using actual employment records.
+    Strictly excludes former employees.
     """
     if df.empty or not enriched_results:
         return df
@@ -945,8 +1095,6 @@ def apply_signalhire_enrichment(
         if col not in df.columns:
             df[col] = ""
 
-    norm_target = normalize_company_name(target_company)
-
     for idx, row in df.iterrows():
         ln_url = clean(row.get("LinkedIn")).split("?")[0].rstrip("/").lower()
         if ln_url not in parsed_map:
@@ -974,53 +1122,28 @@ def apply_signalhire_enrichment(
             if p.get("full_name") and not clean(row.get("Name")):
                 df.at[idx, "Name"] = p.get("full_name")
 
-            # High-Accuracy Employment Verification
-            cur_roles = p.get("current_roles", [])
-            target_found_in_current = False
-            for r in cur_roles:
-                if norm_target in normalize_company_name(r.get("company", "")):
-                    target_found_in_current = True
-                    break
+            # Ground truth verification using validate_signalhire_experiences
+            raw_exps = p.get("raw_candidate", {}).get("experience", [])
+            val_res = validate_signalhire_experiences(
+                raw_exps,
+                target_company,
+                clean(row.get("Requested Persona")),
+            )
 
-            past_roles = p.get("past_roles", [])
-            target_found_in_past = False
-            for r in past_roles:
-                if norm_target in normalize_company_name(r.get("company", "")):
-                    target_found_in_past = True
-                    break
+            df.at[idx, "Verification Status"] = val_res["status"]
+            df.at[idx, "Verification Score"] = val_res["score"]
+            df.at[idx, "Verification Reason"] = val_res["reason"]
+            if val_res.get("current_position"):
+                df.at[idx, "SignalHire Title"] = val_res["current_position"]
+            if val_res.get("current_company"):
+                df.at[idx, "SignalHire Company"] = val_res["current_company"]
 
-            requested_persona = clean(row.get("Requested Persona"))
-            title_score_val = title_score(requested_persona, cur_pos or p.get("headline", ""))
-
-            if target_found_in_current:
+            if val_res["status"] == "VERIFIED":
                 df.at[idx, "Company Match"] = 100
                 df.at[idx, "Currentness Score"] = 100
-                if title_score_val >= 70:
-                    df.at[idx, "Verification Score"] = 98.0
-                    df.at[idx, "Verification Status"] = "VERIFIED"
-                    df.at[idx, "Verification Reason"] = (
-                        f"Verified via SignalHire live records: Currently employed as '{cur_pos}' at '{cur_comp}'."
-                    )
-                else:
-                    df.at[idx, "Verification Score"] = 80.0
-                    df.at[idx, "Verification Status"] = "HIGH CONFIDENCE"
-                    df.at[idx, "Verification Reason"] = (
-                        f"SignalHire confirms active employment at '{cur_comp}', title is '{cur_pos}'."
-                    )
-            elif target_found_in_past and not target_found_in_current:
+            else:
                 df.at[idx, "Currentness Score"] = 0
-                df.at[idx, "Verification Score"] = 20.0
-                df.at[idx, "Verification Status"] = "REJECTED"
-                df.at[idx, "Verification Reason"] = (
-                    f"SignalHire records show person has left {target_company} (currently at '{cur_comp or 'Other'}')."
-                )
-            elif cur_comp and norm_target not in normalize_company_name(cur_comp):
-                df.at[idx, "Company Match"] = 20
-                df.at[idx, "Verification Score"] = 25.0
-                df.at[idx, "Verification Status"] = "REJECTED"
-                df.at[idx, "Verification Reason"] = (
-                    f"SignalHire records indicate person is currently at '{cur_comp}', not '{target_company}'."
-                )
+                df.at[idx, "Company Match"] = 0 if val_res["status"] == "REJECTED" else 70
 
     return df
 
@@ -1087,35 +1210,37 @@ def discover_person(
 
     queries = [
 
-        # Exact persona + company
+        # 1. High-precision: Persona at Company with location, excluding former/ex/past
+        (
+            f'site:linkedin.com/in/ '
+            f'"{persona} at {company}" '
+            f'"{location}" '
+            f'-ex -former -past -previously'
+        ),
+
+        # 2. Persona at Company general (excluding former/ex/past)
+        (
+            f'site:linkedin.com/in/ '
+            f'"{persona} at {company}" '
+            f'-ex -former -past -previously'
+        ),
+
+        # 3. Explicit Present keyword (excluding former/ex/past)
         (
             f'site:linkedin.com/in/ '
             f'"{company}" '
             f'"{persona}" '
-            f'"{location}"'
+            f'"present" '
+            f'-former -ex -past'
         ),
 
-        # Company + persona
-        (
-            f'site:linkedin.com/in/ '
-            f'"{company}" '
-            f'"{persona}"'
-        ),
-
-        # Current employment wording
-        (
-            f'site:linkedin.com/in/ '
-            f'"{persona}" '
-            f'"{company}" '
-            f'"present"'
-        ),
-
-        # Company + current title
+        # 4. Explicit Current keyword (excluding former/ex/past)
         (
             f'site:linkedin.com/in/ '
             f'"{company}" '
             f'"{persona}" '
-            f'"current"'
+            f'"current" '
+            f'-former -ex -past'
         ),
     ]
 
@@ -1548,57 +1673,121 @@ def location_score(
 
 
 # ============================================================
-# CURRENTNESS SCORE
+# CURRENTNESS & FORMER EMPLOYEE DETECTION
 # ============================================================
 
-def currentness_score(
-    text: str,
-) -> int:
+def check_former_employee_indicators(
+    target_company: str,
+    title: str,
+    snippet: str,
+    evidence_text: str = "",
+) -> Tuple[bool, str]:
+    """
+    Detects any indicator that the person has left the target company
+    or currently works at another organisation.
+    Returns (is_former, reason).
+    """
+    target_norm = normalize_company_name(target_company)
+    if not target_norm:
+        return False, ""
 
-    text = clean(text).lower()
+    escaped_target = re.escape(target_norm)
+    combined = f"{title} {snippet} {evidence_text}".lower()
 
-    positive = [
-        "present",
-        "currently",
-        "current",
-        "working at",
-        "works at",
-        "at ",
-
+    # 1. Direct negative keywords explicitly tied to target company
+    direct_patterns = [
+        (rf"\bex[- ]{escaped_target}\b", f"Profile explicitly mentions 'ex-{target_company}'"),
+        (rf"\bformer(?:ly)?\s+(?:at\s+)?{escaped_target}\b", f"Profile explicitly mentions 'former {target_company}'"),
+        (rf"\bprevious(?:ly)?\s+(?:at\s+)?{escaped_target}\b", f"Profile mentions 'previously at {target_company}'"),
+        (rf"\bprior\s+to\s+{escaped_target}\b", f"Profile mentions 'prior to {target_company}'"),
+        (rf"\b{escaped_target}\s+alumni\b", f"Profile mentions '{target_company} alumni'"),
+        (rf"\bleft\s+{escaped_target}\b", f"Profile mentions 'left {target_company}'"),
+        (rf"\bretired\s+(?:from\s+)?{escaped_target}\b", f"Profile mentions 'retired from {target_company}'"),
+        (rf"\bwas\s+(?:a\s+)?(?:[\w\s]{{1,25}})?at\s+{escaped_target}\b", f"Profile mentions 'was at {target_company}'"),
     ]
+    for pattern, reason in direct_patterns:
+        if re.search(pattern, combined):
+            return True, reason
 
-    negative = [
-        "former",
-        "previously",
-        "ex-",
-        "ex ",
-        "past",
-        "left ",
-        "retired",
-        "advisor",
-        "consultant",
-    ]
+    # 2. LinkedIn snippet "Past:" section
+    past_match = re.search(r"\bpast:\s*([^·\n|]+)", combined)
+    if past_match:
+        past_content = past_match.group(1)
+        if target_norm in normalize_company_name(past_content):
+            cur_match = re.search(r"\bcurrent:\s*([^·\n|]+)", combined)
+            cur_content = cur_match.group(1) if cur_match else ""
+            if target_norm not in normalize_company_name(cur_content):
+                return True, f"LinkedIn snippet lists target under 'Past' experience: '{past_content.strip()}'"
 
-    positive_hits = sum(
-        x in text
-        for x in positive
-    )
+    # 3. Closed date ranges without present/current near target
+    date_range_matches = re.findall(r"\b(19\d\d|20\d\d)\s*[-–—to]+\s*(20[0-2][0-6])\b", combined)
+    for start_yr, end_yr in date_range_matches:
+        from datetime import datetime
+        if int(end_yr) <= datetime.now().year:
+            has_present_near_target = bool(
+                re.search(rf"{escaped_target}[^·\n|]{{0,50}}\b(present|current|ongoing)\b", combined) or
+                re.search(rf"\b(present|current|ongoing)\b[^·\n|]{{0,50}}{escaped_target}", combined)
+            )
+            if not has_present_near_target:
+                return True, f"Snippet contains closed employment date range: {start_yr} - {end_yr}"
 
-    negative_hits = sum(
-        x in text
-        for x in negative
-    )
+    # 4. Headline current role points to a DIFFERENT company
+    title_parts = title.split(" - ")
+    headline = title_parts[-1] if len(title_parts) > 1 else title
+    headline_clean = headline.split(" | ")[0].split(" · ")[0].strip().lower()
 
-    if negative_hits > positive_hits:
-        return 0
+    at_match = re.search(r"\b(?:at|@)\s+([A-Za-z0-9&., ]+)", headline_clean)
+    if at_match:
+        other_comp = normalize_company_name(at_match.group(1))
+        if other_comp and len(other_comp) > 2 and target_norm not in other_comp and other_comp not in target_norm:
+            return True, f"Headline indicates current employment is at '{at_match.group(1).strip()}', not '{target_company}'"
 
-    if positive_hits >= 2:
-        return 100
+    return False, ""
 
-    if positive_hits == 1:
-        return 70
 
-    return 40
+def check_current_employee_indicators(
+    target_company: str,
+    title: str,
+    snippet: str,
+    evidence_text: str = "",
+) -> Tuple[bool, int, str]:
+    """
+    Checks if the person is presently working at the target organisation.
+    Returns (is_current, confidence_score, reason).
+    """
+    target_norm = normalize_company_name(target_company)
+    if not target_norm:
+        return False, 0, "No target company provided."
+
+    escaped_target = re.escape(target_norm)
+    title_lower = title.lower()
+    snippet_lower = snippet.lower()
+    combined = f"{title_lower} {snippet_lower} {evidence_text.lower()}"
+
+    # 1. Headline explicitly states: "[Role] at [Target Company]"
+    at_target_pattern = rf"\b(?:at|@)\s+{escaped_target}\b"
+    headline_has_target = bool(re.search(at_target_pattern, title_lower))
+
+    # 2. Snippet structured "Current: ... Target Company"
+    cur_match = re.search(r"\bcurrent:\s*([^·\n|]+)", snippet_lower)
+    snippet_current_has_target = False
+    if cur_match:
+        snippet_current_has_target = target_norm in normalize_company_name(cur_match.group(1))
+
+    # 3. Explicit "present" / "ongoing" associated with target company
+    present_pattern = rf"{escaped_target}[^·\n|]{{0,60}}\b(present|current|currently|ongoing|now)\b|\b(present|current|currently|ongoing|now)\b[^·\n|]{{0,60}}{escaped_target}"
+    has_present = bool(re.search(present_pattern, combined))
+
+    if headline_has_target and (has_present or snippet_current_has_target):
+        return True, 100, f"Headline confirms role at '{target_company}' with active ongoing indicators ('Present/Current')."
+    elif headline_has_target:
+        return True, 85, f"Headline indicates current role at '{target_company}'."
+    elif snippet_current_has_target:
+        return True, 90, f"LinkedIn snippet explicitly marks '{target_company}' under 'Current:' employment."
+    elif has_present:
+        return True, 75, f"Profile text associates '{target_company}' with 'present/current' employment."
+
+    return False, 0, "No explicit indication of present/ongoing employment at target company."
 
 
 # ============================================================
@@ -1613,167 +1802,156 @@ def verify_persona(
     cross_validation: Dict[str, Any],
 ) -> Dict[str, Any]:
 
-    name = clean(
-        profile.get("Name")
-    )
-
-    linkedin = clean(
-        profile.get("LinkedIn")
-    )
-
-    search_title = clean(
-        profile.get(
-            "Title from Search"
-        )
-    )
-
-    snippet = clean(
-        profile.get("Snippet")
-    )
+    name = clean(profile.get("Name"))
+    linkedin = clean(profile.get("LinkedIn"))
+    search_title = clean(profile.get("Title from Search"))
+    snippet = clean(profile.get("Snippet"))
 
     all_evidence_text = (
         search_title
         + " "
         + snippet
         + " "
-        + safe_json(
-            cross_validation
-        )
+        + safe_json(cross_validation)
     )
 
-    company_match = company_score(
+    company_match = company_score(company, all_evidence_text)
+    persona_match = title_score(requested_persona, search_title + " " + snippet)
+    location_match = location_score(location, all_evidence_text)
+
+    # 1. STRICT FORMER EMPLOYEE CHECK
+    is_former, former_reason = check_former_employee_indicators(
         company,
+        search_title,
+        snippet,
+        all_evidence_text,
+    )
+    if is_former:
+        return {
+            "Name": name,
+            "LinkedIn": linkedin,
+            "Requested Persona": requested_persona,
+            "Search Title": search_title,
+            "Search Snippet": snippet,
+            "Company Match": company_match,
+            "Persona Match": persona_match,
+            "Currentness Score": 0,
+            "Location Match": location_match,
+            "Independent Evidence Score": 0,
+            "Verification Score": 0.0,
+            "Verification Status": "REJECTED",
+            "Verification Reason": f"FORMER EMPLOYEE: {former_reason}. Excluded from results.",
+            "Evidence Hits": 0,
+            "Discovery Evidence": safe_json(profile.get("Discovery Evidence", [])),
+        }
+
+    # 2. COMPANY MATCH CHECK
+    if company_match < 60:
+        return {
+            "Name": name,
+            "LinkedIn": linkedin,
+            "Requested Persona": requested_persona,
+            "Search Title": search_title,
+            "Search Snippet": snippet,
+            "Company Match": company_match,
+            "Persona Match": persona_match,
+            "Currentness Score": 0,
+            "Location Match": location_match,
+            "Independent Evidence Score": 0,
+            "Verification Score": 0.0,
+            "Verification Status": "REJECTED",
+            "Verification Reason": f"Target company '{company}' does not match profile evidence.",
+            "Evidence Hits": 0,
+            "Discovery Evidence": safe_json(profile.get("Discovery Evidence", [])),
+        }
+
+    # 3. STRICT CURRENT EMPLOYMENT CHECK
+    is_current, current_score, current_reason = check_current_employee_indicators(
+        company,
+        search_title,
+        snippet,
         all_evidence_text,
     )
 
-    persona_match = title_score(
-        requested_persona,
-        search_title
-        + " "
-        + snippet,
-    )
-
-    location_match = location_score(
-        location,
-        all_evidence_text,
-    )
-
-    currentness = currentness_score(
-        all_evidence_text,
-    )
-
-    # Number of independent search queries
-    # which produced relevant evidence.
+    # Evidence hits across queries
     evidence_hits = 0
-
-    for block in cross_validation.get(
-        "evidence",
-        [],
-    ):
-
-        query_text = safe_json(
-            block
-        ).lower()
-
-        company_found = (
-            normalize_company_name(
-                company
-            )
-            in normalize_company_name(
-                query_text
-            )
-        )
-
-        persona_found = (
-            requested_persona.lower()
-            in query_text
-        )
-
-        if company_found and persona_found:
+    for block in cross_validation.get("evidence", []):
+        query_text = safe_json(block).lower()
+        if normalize_company_name(company) in normalize_company_name(query_text) and requested_persona.lower() in query_text:
             evidence_hits += 1
 
-    evidence_score = min(
-        100,
-        evidence_hits * 25,
-    )
+    evidence_score = min(100, evidence_hits * 25)
 
-    # --------------------------------------------------------
-    # FINAL SCORE
-    # --------------------------------------------------------
+    if not is_current:
+        # Per user requirement:
+        # If employment status is unclear or cannot be confidently verified,
+        # exclude from verified results rather than returning incorrect result.
+        return {
+            "Name": name,
+            "LinkedIn": linkedin,
+            "Requested Persona": requested_persona,
+            "Search Title": search_title,
+            "Search Snippet": snippet,
+            "Company Match": company_match,
+            "Persona Match": persona_match,
+            "Currentness Score": 0,
+            "Location Match": location_match,
+            "Independent Evidence Score": evidence_score,
+            "Verification Score": 40.0,
+            "Verification Status": "REVIEW",
+            "Verification Reason": f"UNCLEAR EMPLOYMENT: {current_reason} (Not verified as currently working at '{company}').",
+            "Evidence Hits": evidence_hits,
+            "Discovery Evidence": safe_json(profile.get("Discovery Evidence", [])),
+        }
 
+    if persona_match < 70:
+        return {
+            "Name": name,
+            "LinkedIn": linkedin,
+            "Requested Persona": requested_persona,
+            "Search Title": search_title,
+            "Search Snippet": snippet,
+            "Company Match": company_match,
+            "Persona Match": persona_match,
+            "Currentness Score": current_score,
+            "Location Match": location_match,
+            "Independent Evidence Score": evidence_score,
+            "Verification Score": 65.0,
+            "Verification Status": "REVIEW",
+            "Verification Reason": f"Current role confirmed at '{company}', but title does not strongly match requested persona '{requested_persona}'.",
+            "Evidence Hits": evidence_hits,
+            "Discovery Evidence": safe_json(profile.get("Discovery Evidence", [])),
+        }
+
+    # 4. CONFIRMED PRESENT EMPLOYEE
     final_score = round(
-        (
-            company_match * 0.35
-            + persona_match * 0.30
-            + currentness * 0.20
-            + location_match * 0.05
-            + evidence_score * 0.10
-        ),
+        company_match * 0.35
+        + persona_match * 0.30
+        + current_score * 0.25
+        + evidence_score * 0.10,
         1,
     )
 
-    # --------------------------------------------------------
-    # STRICT DECISION LOGIC
-    # --------------------------------------------------------
+    status = "VERIFIED"
+    reason = f"CONFIRMED PRESENT EMPLOYEE: {current_reason}"
 
-    if company_match < 60:
-
-        status = "REJECTED"
-
-        reason = (
-            "Insufficient evidence that the "
-            "person is associated with the "
-            "target company."
-        )
-
-    elif persona_match < 70:
-
-        status = "REVIEW"
-
-        reason = (
-            "Company association appears "
-            "possible, but the requested "
-            "persona/title does not match strongly."
-        )
-
-    elif currentness == 0:
-
-        status = "REJECTED"
-
-        reason = (
-            "Evidence contains indicators "
-            "that the person may be a former "
-            "employee, advisor, consultant, "
-            "or otherwise not currently employed."
-        )
-
-    elif final_score >= 85 and evidence_hits >= 2:
-
-        status = "VERIFIED"
-
-        reason = (
-            "Strong company, persona and "
-            "current-employment evidence "
-            "across multiple searches."
-        )
-
-    elif final_score >= 70:
-
-        status = "HIGH CONFIDENCE"
-
-        reason = (
-            "Strong match, but additional "
-            "manual validation is recommended."
-        )
-
-    else:
-
-        status = "REVIEW"
-
-        reason = (
-            "Evidence is insufficient for "
-            "automatic verification."
-        )
+    return {
+        "Name": name,
+        "LinkedIn": linkedin,
+        "Requested Persona": requested_persona,
+        "Search Title": search_title,
+        "Search Snippet": snippet,
+        "Company Match": company_match,
+        "Persona Match": persona_match,
+        "Currentness Score": current_score,
+        "Location Match": location_match,
+        "Independent Evidence Score": evidence_score,
+        "Verification Score": final_score,
+        "Verification Status": status,
+        "Verification Reason": reason,
+        "Evidence Hits": evidence_hits,
+        "Discovery Evidence": safe_json(profile.get("Discovery Evidence", [])),
+    }
 
     return {
         "Name": name,
@@ -2581,9 +2759,11 @@ if company_data:
                     )
                 with c_enr2:
                     if st.button("⚡ Enrich Top 3 via SignalHire", key="btn_enrich_personas", use_container_width=True):
-                        unenriched = persona_df[
-                            persona_df.get("SignalHire Status", "") != "success"
-                        ].head(3)
+                        _sh_col = "SignalHire Status"
+                        if _sh_col in persona_df.columns:
+                            unenriched = persona_df[persona_df[_sh_col] != "success"].head(3)
+                        else:
+                            unenriched = persona_df.head(3)
                         urls = [u for u in unenriched["LinkedIn"].tolist() if u]
                         if urls:
                             with st.spinner(f"Enriching {len(urls)} profiles via SignalHire..."):
@@ -2800,9 +2980,11 @@ if company_data:
                             f"**⚡ Contact Enrichment**: Reveal verified work emails, personal emails, direct phone numbers, and full background via SignalHire{credit_txt}."
                         )
                     with c_lead2:
-                        un_enr = verified[
-                            verified.get("SignalHire Status", "") != "success"
-                        ]
+                        sh_col = "SignalHire Status"
+                        if sh_col in verified.columns:
+                            un_enr = verified[verified[sh_col] != "success"]
+                        else:
+                            un_enr = verified
                         if not un_enr.empty:
                             if st.button(
                                 f"⚡ Enrich {len(un_enr)} Verified",
