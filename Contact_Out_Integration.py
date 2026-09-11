@@ -1,3 +1,4 @@
+```python
 import os
 import re
 import requests
@@ -212,9 +213,7 @@ def classify_persona(title):
     t = title.lower()
 
     for pattern in EXCLUDED:
-
         if re.search(pattern, t):
-
             return (
                 False,
                 "Excluded",
@@ -311,8 +310,511 @@ def get_contactout_headers(api_key):
 
 
 # ============================================================
-# STEP 1
-# COMPANY NAME -> LUSHA COMPANY RECORDS
+# CONTACTOUT IT SEARCH TITLES
+# ============================================================
+
+CONTACTOUT_IT_JOB_TITLES = [
+
+    # Executive
+    "CTO",
+    "Chief Technology Officer",
+    "Chief Technical Officer",
+    "CIO",
+    "Chief Information Officer",
+    "CISO",
+    "Chief Information Security Officer",
+    "Chief Security Officer",
+
+    # IT leadership
+    "IT Manager",
+    "IT Director",
+    "Head of IT",
+    "IT Head",
+    "IT Lead",
+    "Information Technology Manager",
+    "Information Technology Director",
+    "Information Technology Head",
+    "Information Technology Lead",
+    "Manager of Information Technology",
+    "Director of Information Technology",
+
+    # Technology
+    "Technology Manager",
+    "Technology Director",
+    "Technology Head",
+    "Head of Technology",
+    "Director of Technology",
+    "Technology Lead",
+    "Technology Operations Manager",
+    "Technology Operations Director",
+
+    # Infrastructure
+    "Infrastructure Manager",
+    "Infrastructure Director",
+    "Infrastructure Lead",
+    "IT Infrastructure Manager",
+    "IT Infrastructure Director",
+    "IT Infrastructure Lead",
+    "Infrastructure Architect",
+    "Cloud Infrastructure Manager",
+    "Cloud Architect",
+    "Cloud Engineer",
+
+    # Network
+    "Network Manager",
+    "Network Director",
+    "Network Lead",
+    "Network Architect",
+    "Network Administrator",
+    "Network Engineer",
+    "Network Security Manager",
+    "Network Security Engineer",
+
+    # Systems
+    "Systems Administrator",
+    "System Administrator",
+    "Systems Manager",
+    "Systems Engineer",
+    "System Engineer",
+    "Systems Architect",
+    "System Architect",
+    "Server Administrator",
+
+    # Security
+    "Information Security Manager",
+    "Information Security Director",
+    "Information Security Lead",
+    "Information Security Architect",
+    "Cyber Security Manager",
+    "Cybersecurity Manager",
+    "Cyber Security Director",
+    "Cybersecurity Director",
+    "Cyber Security Lead",
+    "Cybersecurity Lead",
+    "Security Manager",
+    "Security Director",
+    "Security Architect",
+    "Security Engineer",
+    "Security Operations Manager",
+    "SOC Manager",
+    "SOC Lead",
+
+    # Operations
+    "IT Operations Manager",
+    "IT Operations Director",
+    "IT Operations Lead",
+    "IT Support Manager",
+    "IT Support Lead",
+    "IT Service Manager",
+    "IT Service Delivery Manager",
+    "Service Desk Manager",
+    "Help Desk Manager",
+    "Technical Support Manager",
+    "Technical Support Lead",
+    "Desktop Support Manager",
+    "Desktop Support Lead",
+    "IT Administrator",
+
+    # Asset
+    "IT Asset Manager",
+    "IT Asset Management",
+    "Software Asset Manager",
+    "Software Asset Management",
+    "Hardware Asset Manager",
+    "Hardware Asset Management",
+
+    # Information systems
+    "Information Systems Manager",
+    "Information Systems Director",
+    "Information Systems Head",
+]
+
+
+# ============================================================
+# CONTACTOUT SEARCH
+# ============================================================
+
+def find_contactout_people(
+    api_key,
+    exact_company_name="",
+    company_domain="",
+    company_location=""
+):
+
+    if not api_key or not api_key.strip():
+
+        return None, {
+            "error": "ContactOut API key is missing."
+        }
+
+    payload = {
+
+        "page": 1,
+
+        "page_size": 25,
+
+        "job_title": CONTACTOUT_IT_JOB_TITLES,
+
+        "current_titles_only": True,
+
+        "include_related_job_titles": True,
+
+        "company_filter": "current",
+
+        "current_company_only": True,
+
+        # IMPORTANT:
+        # We only want profile / LinkedIn information.
+        # Do not reveal email or phone.
+        "reveal_info": False,
+
+        "detailed_experience": True,
+
+        "detailed_education": False,
+    }
+
+    if exact_company_name:
+
+        payload["company"] = [
+            exact_company_name.strip()
+        ]
+
+    if company_domain:
+
+        clean = clean_domain(company_domain)
+
+        if clean:
+
+            payload["domain"] = [
+                f"https://{clean}"
+            ]
+
+    if company_location:
+
+        payload["location"] = [
+            company_location
+        ]
+
+    try:
+
+        response = requests.post(
+            CONTACTOUT_PEOPLE_SEARCH_URL,
+            headers=get_contactout_headers(api_key),
+            json=payload,
+            timeout=60
+        )
+
+        return response, payload
+
+    except requests.RequestException as e:
+
+        return None, {
+            "error": str(e),
+            "payload": payload
+        }
+
+
+# ============================================================
+# CONTACTOUT PROFILE EXTRACTION
+# ============================================================
+
+def extract_contactout_profiles(data):
+
+    if not isinstance(data, dict):
+
+        return []
+
+    profiles = data.get("profiles")
+
+    if isinstance(profiles, dict):
+
+        rows = []
+
+        for linkedin_url, profile in profiles.items():
+
+            if isinstance(profile, dict):
+
+                item = dict(profile)
+
+                if not item.get("url"):
+
+                    item["url"] = linkedin_url
+
+                rows.append(item)
+
+        return rows
+
+    if isinstance(profiles, list):
+
+        return profiles
+
+    for key in [
+        "results",
+        "people",
+        "data"
+    ]:
+
+        value = data.get(key)
+
+        if isinstance(value, list):
+
+            return value
+
+    return []
+
+
+# ============================================================
+# CONTACTOUT PROFILE NORMALIZATION
+# ============================================================
+
+def normalize_contactout_profile(profile):
+
+    if not isinstance(profile, dict):
+
+        return None
+
+    # --------------------------------------------------------
+    # NAME
+    # --------------------------------------------------------
+
+    name = (
+        profile.get("full_name")
+        or profile.get("fullName")
+        or profile.get("name")
+        or ""
+    )
+
+    # --------------------------------------------------------
+    # TITLE
+    # --------------------------------------------------------
+
+    title = (
+        profile.get("title")
+        or profile.get("job_title")
+        or profile.get("jobTitle")
+        or profile.get("headline")
+        or ""
+    )
+
+    # --------------------------------------------------------
+    # JOB FUNCTION
+    # --------------------------------------------------------
+
+    department = (
+        profile.get("job_function")
+        or profile.get("jobFunction")
+        or profile.get("department")
+        or ""
+    )
+
+    if isinstance(department, list):
+
+        department = ", ".join(
+            str(x)
+            for x in department
+            if x
+        )
+
+    # --------------------------------------------------------
+    # SENIORITY
+    # --------------------------------------------------------
+
+    seniority = (
+        profile.get("seniority")
+        or ""
+    )
+
+    if isinstance(seniority, str):
+
+        seniority = seniority.replace(
+            "_",
+            " "
+        ).title()
+
+    # --------------------------------------------------------
+    # COMPANY
+    # --------------------------------------------------------
+
+    company = profile.get(
+        "company",
+        {}
+    )
+
+    if not isinstance(company, dict):
+
+        company = {}
+
+    company_name = (
+        company.get("name")
+        or profile.get("company_name")
+        or profile.get("companyName")
+        or ""
+    )
+
+    company_domain = clean_domain(
+        company.get("domain")
+        or company.get("website")
+        or company.get("website_url")
+        or profile.get("company_domain")
+        or ""
+    )
+
+    # --------------------------------------------------------
+    # LOCATION
+    # --------------------------------------------------------
+
+    location = profile.get(
+        "location",
+        {}
+    )
+
+    if isinstance(location, str):
+
+        employee_city = location
+        employee_state = ""
+        employee_country = ""
+
+    elif isinstance(location, dict):
+
+        employee_city = (
+            location.get("city")
+            or ""
+        )
+
+        employee_state = (
+            location.get("state")
+            or location.get("state_name")
+            or ""
+        )
+
+        employee_country = (
+            location.get("country")
+            or location.get("country_name")
+            or ""
+        )
+
+    else:
+
+        employee_city = ""
+        employee_state = ""
+        employee_country = ""
+
+    # --------------------------------------------------------
+    # LINKEDIN
+    # --------------------------------------------------------
+
+    linkedin = (
+        profile.get("url")
+        or profile.get("linkedin_url")
+        or profile.get("linkedinUrl")
+        or profile.get("linkedin")
+        or ""
+    )
+
+    linkedin_id = ""
+
+    if linkedin:
+
+        linkedin_match = re.search(
+            r"linkedin\.com/in/([^/?#]+)",
+            str(linkedin),
+            re.IGNORECASE
+        )
+
+        if linkedin_match:
+
+            linkedin_id = linkedin_match.group(1)
+
+    # --------------------------------------------------------
+    # EXPERIENCE FALLBACK
+    # --------------------------------------------------------
+
+    experience = profile.get(
+        "experience"
+    )
+
+    if isinstance(experience, list):
+
+        for exp in experience:
+
+            if not isinstance(exp, dict):
+                continue
+
+            if exp.get("is_current") is True:
+
+                title = (
+                    title
+                    or exp.get("title")
+                    or ""
+                )
+
+                if not company_name:
+
+                    company_name = (
+                        exp.get("company_name")
+                        or ""
+                    )
+
+                break
+
+    # --------------------------------------------------------
+    # CLASSIFY
+    # --------------------------------------------------------
+
+    qualified, persona, reason = classify_persona(
+        title
+    )
+
+    # --------------------------------------------------------
+    # CONTACT ID
+    # --------------------------------------------------------
+
+    contact_id = (
+        profile.get("id")
+        or profile.get("contact_id")
+        or profile.get("contactId")
+        or linkedin_id
+        or ""
+    )
+
+    return {
+
+        "Name": name,
+
+        "Current Title": title,
+
+        "Persona": persona,
+
+        "Department": department,
+
+        "Seniority": seniority,
+
+        "Company": company_name,
+
+        "Company Domain": company_domain,
+
+        "Employee City": employee_city,
+
+        "Employee State": employee_state,
+
+        "Employee Country": employee_country,
+
+        "LinkedIn": linkedin,
+
+        "LinkedIn ID": linkedin_id,
+
+        "Contact ID": contact_id,
+
+        "Qualified": qualified,
+
+        "Reason": reason,
+
+        "Provider": "ContactOut",
+    }
+
+
+# ============================================================
+# LUSHA COMPANY SEARCH
 # ============================================================
 
 def find_companies(api_key, company_name):
@@ -332,12 +834,7 @@ def find_companies(api_key, company_name):
 
 
 # ============================================================
-# STEP 2A
 # LUSHA CONTACT SEARCH
-#
-# IMPORTANT:
-# We intentionally do not restrict Lusha by our own title list.
-# The Python classifier performs persona filtering.
 # ============================================================
 
 def find_contacts(
@@ -350,12 +847,17 @@ def find_contacts(
 ):
 
     company_include = {
+
         "names": [
             exact_company_name
         ]
     }
 
-    if company_country or company_state or company_city:
+    if (
+        company_country
+        or company_state
+        or company_city
+    ):
 
         location = {}
 
@@ -384,6 +886,7 @@ def find_contacts(
         "filters": {
 
             "companies": {
+
                 "include": company_include
             }
         }
@@ -400,93 +903,13 @@ def find_contacts(
 
 
 # ============================================================
-# STEP 2B
-# CONTACTOUT CONTACT SEARCH
-#
-# IMPORTANT:
-# reveal_info=False
-#
-# We only want profile/person information and LinkedIn.
-# We do NOT request email/phone reveal.
-# ============================================================
-
-def find_contacts_contactout(
-    api_key,
-    exact_company_name,
-    company_domain="",
-    company_country="",
-    company_state="",
-    company_city="",
-    page_size=25
-):
-
-    payload = {
-        "page": 1,
-        "page_size": min(int(page_size), 25),
-
-        "company": [
-            exact_company_name
-        ],
-
-        "company_filter": "current",
-
-        "is_currently_working": True,
-
-        "current_titles_only": True,
-
-        "reveal_info": False,
-
-        "detailed_experience": True,
-
-        "detailed_education": False,
-
-        "output_fields": [
-            "title",
-            "headline",
-            "li_vanity"
-        ]
-    }
-
-    # Domain can improve matching when available.
-    if company_domain:
-        payload["domain"] = [
-            company_domain
-        ]
-
-    # ContactOut accepts location as a search filter.
-    location_parts = []
-
-    if company_city:
-        location_parts.append(str(company_city).strip())
-
-    if company_state:
-        location_parts.append(str(company_state).strip())
-
-    if company_country:
-        location_parts.append(str(company_country).strip())
-
-    if location_parts:
-        payload["location"] = [
-            ", ".join(location_parts)
-        ]
-
-    response = requests.post(
-        CONTACTOUT_PEOPLE_SEARCH_URL,
-        headers=get_contactout_headers(api_key),
-        json=payload,
-        timeout=60
-    )
-
-    return response, payload
-
-
-# ============================================================
 # CONTACT EXTRACTION
 # ============================================================
 
 def extract_contacts(data):
 
     if not isinstance(data, dict):
+
         return []
 
     possible = [
@@ -500,6 +923,7 @@ def extract_contacts(data):
         value = data.get(key)
 
         if isinstance(value, list):
+
             return value
 
         if isinstance(value, dict):
@@ -511,77 +935,8 @@ def extract_contacts(data):
                 )
 
                 if isinstance(nested, list):
+
                     return nested
-
-    return []
-
-
-# ============================================================
-# CONTACTOUT EXTRACTION
-# ============================================================
-
-def extract_contactout_profiles(data):
-
-    if not isinstance(data, dict):
-        return []
-
-    profiles = data.get("profiles")
-
-    if isinstance(profiles, dict):
-
-        rows = []
-
-        for linkedin_url, profile in profiles.items():
-
-            if not isinstance(profile, dict):
-                profile = {}
-
-            row = dict(profile)
-
-            if not row.get("linkedin"):
-                row["linkedin"] = linkedin_url
-
-            if not row.get("linkedin_url"):
-                row["linkedin_url"] = linkedin_url
-
-            rows.append(row)
-
-        return rows
-
-    if isinstance(profiles, list):
-        return profiles
-
-    for key in [
-        "results",
-        "contacts",
-        "data"
-    ]:
-
-        value = data.get(key)
-
-        if isinstance(value, list):
-            return value
-
-        if isinstance(value, dict):
-
-            rows = []
-
-            for linkedin_url, profile in value.items():
-
-                if isinstance(profile, dict):
-
-                    row = dict(profile)
-
-                    if not row.get("linkedin"):
-                        row["linkedin"] = linkedin_url
-
-                    if not row.get("linkedin_url"):
-                        row["linkedin_url"] = linkedin_url
-
-                    rows.append(row)
-
-            if rows:
-                return rows
 
     return []
 
@@ -593,16 +948,25 @@ def extract_contactout_profiles(data):
 def normalize_contact(contact):
 
     if not isinstance(contact, dict):
+
         return None
 
-    company = contact.get("company", {})
+    company = contact.get(
+        "company",
+        {}
+    )
 
     if not isinstance(company, dict):
+
         company = {}
 
-    location = contact.get("location", {})
+    location = contact.get(
+        "location",
+        {}
+    )
 
     if not isinstance(location, dict):
+
         location = {}
 
     first_name = (
@@ -688,9 +1052,13 @@ def normalize_contact(contact):
             seniority or ""
         )
 
-    social_links = contact.get("socialLinks", {})
+    social_links = contact.get(
+        "socialLinks",
+        {}
+    )
 
     if not isinstance(social_links, dict):
+
         social_links = {}
 
     linkedin = (
@@ -712,6 +1080,7 @@ def normalize_contact(contact):
         )
 
         if linkedin_match:
+
             linkedin_id = linkedin_match.group(1)
 
     qualified, persona, reason = classify_persona(
@@ -774,318 +1143,266 @@ def normalize_contact(contact):
 
         "Reason": reason,
 
-        "Provider": "Lusha"
+        "Provider": "Lusha",
     }
 
 
 # ============================================================
-# NORMALIZE CONTACTOUT CONTACT
+# PERSONA FETCHER
 # ============================================================
 
-def normalize_contactout_contact(
-    contact,
+def fetch_it_personas(
+    provider,
+    lusha_api_key="",
+    contactout_api_key="",
     exact_company_name="",
-    company_domain=""
+    company_domain="",
+    company_country="",
+    company_state="",
+    company_city=""
 ):
 
-    if not isinstance(contact, dict):
-        return None
+    # ========================================================
+    # LUSHA
+    # ========================================================
 
-    # --------------------------------------------------------
-    # NAME
-    # --------------------------------------------------------
+    if provider == "Lusha":
 
-    first_name = (
-        contact.get("first_name")
-        or contact.get("firstName")
-        or ""
+        response, payload = find_contacts(
+            lusha_api_key,
+            exact_company_name,
+            company_domain,
+            company_country,
+            company_state,
+            company_city,
+        )
+
+        if response.status_code != 200:
+
+            return (
+                [],
+                response,
+                payload,
+                f"Lusha returned HTTP {response.status_code}"
+            )
+
+        try:
+
+            data = response.json()
+
+        except Exception:
+
+            return (
+                [],
+                response,
+                payload,
+                "Lusha returned invalid JSON"
+            )
+
+        contacts = extract_contacts(data)
+
+        normalized = []
+
+        for contact in contacts:
+
+            row = normalize_contact(
+                contact
+            )
+
+            if row:
+
+                normalized.append(row)
+
+        return (
+            normalized,
+            response,
+            payload,
+            ""
+        )
+
+    # ========================================================
+    # CONTACTOUT
+    # ========================================================
+
+    if provider == "ContactOut":
+
+        response, payload = find_contactout_people(
+            contactout_api_key,
+            exact_company_name,
+            company_domain,
+            (
+                company_city
+                or company_state
+                or company_country
+            )
+        )
+
+        if response is None:
+
+            error = (
+                payload.get("error")
+                if isinstance(payload, dict)
+                else "ContactOut connection error"
+            )
+
+            return (
+                [],
+                None,
+                payload,
+                error
+            )
+
+        if response.status_code != 200:
+
+            try:
+                body = response.json()
+            except Exception:
+                body = response.text[:1000]
+
+            return (
+                [],
+                response,
+                payload,
+                f"ContactOut returned HTTP {response.status_code}: {body}"
+            )
+
+        try:
+
+            data = response.json()
+
+        except Exception:
+
+            return (
+                [],
+                response,
+                payload,
+                "ContactOut returned invalid JSON"
+            )
+
+        profiles = extract_contactout_profiles(
+            data
+        )
+
+        normalized = []
+
+        for profile in profiles:
+
+            row = normalize_contactout_profile(
+                profile
+            )
+
+            if row:
+
+                normalized.append(row)
+
+        return (
+            normalized,
+            response,
+            payload,
+            ""
+        )
+
+    return (
+        [],
+        None,
+        {},
+        "Unknown people provider"
     )
-
-    last_name = (
-        contact.get("last_name")
-        or contact.get("lastName")
-        or ""
-    )
-
-    name = (
-        contact.get("name")
-        or contact.get("full_name")
-        or contact.get("fullName")
-        or f"{first_name} {last_name}".strip()
-    )
-
-    # --------------------------------------------------------
-    # TITLE
-    # --------------------------------------------------------
-
-    title = (
-        contact.get("title")
-        or contact.get("job_title")
-        or contact.get("jobTitle")
-        or ""
-    )
-
-    # --------------------------------------------------------
-    # HEADLINE
-    # --------------------------------------------------------
-
-    headline = (
-        contact.get("headline")
-        or ""
-    )
-
-    # --------------------------------------------------------
-    # COMPANY
-    # --------------------------------------------------------
-
-    company = contact.get("company")
-
-    if isinstance(company, dict):
-
-        company_name = (
-            company.get("name")
-            or company.get("company_name")
-            or exact_company_name
-        )
-
-        company_domain_value = (
-            company.get("domain")
-            or company.get("website")
-            or company_domain
-        )
-
-    else:
-
-        company_name = (
-            str(company)
-            if company
-            else exact_company_name
-        )
-
-        company_domain_value = company_domain
-
-    # --------------------------------------------------------
-    # LINKEDIN
-    # --------------------------------------------------------
-
-    linkedin = (
-        contact.get("linkedin_url")
-        or contact.get("linkedin")
-        or contact.get("profile_url")
-        or ""
-    )
-
-    # ContactOut may return li_vanity instead.
-    if not linkedin:
-
-        vanity = (
-            contact.get("li_vanity")
-            or contact.get("linkedin_vanity")
-            or ""
-        )
-
-        if vanity:
-
-            vanity = str(vanity).strip()
-
-            if vanity.startswith("http"):
-
-                linkedin = vanity
-
-            else:
-
-                linkedin = (
-                    "https://www.linkedin.com/in/"
-                    + vanity.lstrip("/")
-                )
-
-    linkedin_id = ""
-
-    if linkedin:
-
-        linkedin_match = re.search(
-            r"linkedin\.com/in/([^/?#]+)",
-            str(linkedin),
-            re.IGNORECASE
-        )
-
-        if linkedin_match:
-            linkedin_id = linkedin_match.group(1)
-
-    # --------------------------------------------------------
-    # LOCATION
-    # --------------------------------------------------------
-
-    location = contact.get("location")
-
-    if isinstance(location, dict):
-
-        city = (
-            location.get("city")
-            or ""
-        )
-
-        state = (
-            location.get("state")
-            or location.get("state_name")
-            or ""
-        )
-
-        country = (
-            location.get("country")
-            or location.get("country_name")
-            or ""
-        )
-
-    else:
-
-        city = contact.get("city") or ""
-        state = contact.get("state") or ""
-        country = contact.get("country") or ""
-
-    # --------------------------------------------------------
-    # DEPARTMENT / FUNCTION
-    # --------------------------------------------------------
-
-    department = (
-        contact.get("job_function")
-        or contact.get("department")
-        or ""
-    )
-
-    if isinstance(department, list):
-
-        department = ", ".join(
-            str(x)
-            for x in department
-            if x
-        )
-
-    # --------------------------------------------------------
-    # SENIORITY
-    # --------------------------------------------------------
-
-    seniority = (
-        contact.get("seniority")
-        or ""
-    )
-
-    if isinstance(seniority, list):
-
-        seniority = ", ".join(
-            str(x)
-            for x in seniority
-            if x
-        )
-
-    if isinstance(seniority, str):
-
-        seniority = seniority.replace(
-            "_",
-            " "
-        ).title()
-
-    # --------------------------------------------------------
-    # PERSONA
-    # --------------------------------------------------------
-
-    qualified, persona, reason = classify_persona(
-        title
-    )
-
-    # --------------------------------------------------------
-    # RETURN
-    # --------------------------------------------------------
-
-    return {
-
-        "Name": name,
-
-        "Current Title": title,
-
-        "Persona": persona,
-
-        "Department": str(department or ""),
-
-        "Seniority": str(seniority or ""),
-
-        "Company": company_name,
-
-        "Company Domain": company_domain_value,
-
-        "Employee City": city,
-
-        "Employee State": state,
-
-        "Employee Country": country,
-
-        "LinkedIn": linkedin,
-
-        "LinkedIn ID": linkedin_id,
-
-        "Contact ID": (
-            contact.get("id")
-            or contact.get("contact_id")
-            or ""
-        ),
-
-        "Qualified": qualified,
-
-        "Reason": reason,
-
-        "Provider": "ContactOut"
-    }
 
 
 # ============================================================
-# FILTER QUALIFIED CONTACTS
+# DOMAIN CLEANER
 # ============================================================
 
-def filter_persona_contacts(normalized_contacts):
+def clean_domain(value):
 
-    qualified = []
+    if value is None:
 
-    for contact in normalized_contacts:
+        return ""
 
-        if not contact:
-            continue
+    value = str(value).strip()
 
-        if contact.get("Qualified"):
+    if not value:
 
-            qualified.append(contact)
+        return ""
 
-    return qualified
+    if value.lower() in {
+        "nan",
+        "none",
+        "null"
+    }:
+
+        return ""
+
+    value = re.sub(
+        r"^https?://",
+        "",
+        value,
+        flags=re.IGNORECASE
+    )
+
+    value = (
+        value
+        .split("/")[0]
+        .split("?")[0]
+        .split("#")[0]
+    )
+
+    value = value.strip().lower()
+
+    value = value.removeprefix(
+        "www."
+    )
+
+    return value
+
+
+# ============================================================
+# FIRST NONEMPTY
+# ============================================================
+
+def first_nonempty(*values, default=""):
+
+    for value in values:
+
+        if value not in (
+            None,
+            "",
+            [],
+            {},
+            "nan"
+        ):
+
+            return value
+
+    return default
 
 
 # ============================================================
 # APOLLO ORGANIZATION ENRICHMENT
 # ============================================================
 
-def apollo_org_enrich(api_key, domain, company_name=""):
+def apollo_org_enrich(
+    api_key,
+    domain,
+    company_name=""
+):
 
     if not api_key or not api_key.strip():
-        return None, {"error": "Apollo API key is missing."}
 
-    clean_domain_value = re.sub(
-        r"^https?://",
-        "",
-        str(domain or "").strip(),
-        flags=re.IGNORECASE
+        return None, {
+            "error": "Apollo API key is missing."
+        }
+
+    clean = clean_domain(
+        domain
     )
 
-    clean_domain_value = (
-        clean_domain_value
-        .split("/")[0]
-        .strip()
-        .lower()
-    )
+    if not clean:
 
-    clean_domain_value = clean_domain_value.removeprefix(
-        "www."
-    )
-
-    if not clean_domain_value:
-        return None, {"error": "Company domain is missing."}
+        return None, {
+            "error": "Company domain is missing."
+        }
 
     url = (
         "https://api.apollo.io/api/v1/"
@@ -1093,71 +1410,111 @@ def apollo_org_enrich(api_key, domain, company_name=""):
     )
 
     headers = {
+
         "accept": "application/json",
+
         "x-api-key": api_key.strip(),
     }
 
     params = {
-        "domain": clean_domain_value,
+
+        "domain": clean
     }
 
     if company_name and company_name.strip():
-        params["name"] = company_name.strip()
 
-    response = requests.get(
-        url,
-        headers=headers,
-        params=params,
-        timeout=30,
-    )
+        params["name"] = (
+            company_name.strip()
+        )
 
-    return response, {
-        "url": url,
-        "params": params,
-        "headers": {
-            "accept": "application/json",
-            "x-api-key": "***masked***"
-        },
-    }
+    try:
+
+        response = requests.get(
+            url,
+            headers=headers,
+            params=params,
+            timeout=30,
+        )
+
+        return response, {
+            "url": url,
+            "params": params,
+            "headers": {
+                "accept": "application/json",
+                "x-api-key": "***masked***"
+            },
+        }
+
+    except requests.RequestException as e:
+
+        return None, {
+            "error": str(e)
+        }
 
 
-def apollo_complete_org(api_key, organization_id):
+# ============================================================
+# APOLLO COMPLETE ORGANIZATION
+# ============================================================
+
+def apollo_complete_org(
+    api_key,
+    organization_id
+):
 
     if not api_key or not api_key.strip():
-        return None, {"error": "Apollo API key is missing."}
 
-    if not organization_id or str(
-        organization_id
-    ).strip() in {"", "Not available"}:
+        return None, {
+            "error": "Apollo API key is missing."
+        }
+
+    if (
+        not organization_id
+        or str(organization_id).strip()
+        in {"", "Not available"}
+    ):
 
         return None, {
             "error": "Apollo organization ID is missing."
         }
 
     url = (
-        f"https://api.apollo.io/api/v1/"
+        "https://api.apollo.io/api/v1/"
         f"organizations/{organization_id}"
     )
 
     headers = {
+
         "accept": "application/json",
+
         "x-api-key": api_key.strip(),
     }
 
-    response = requests.get(
-        url,
-        headers=headers,
-        timeout=30,
-    )
+    try:
 
-    return response, {
-        "url": url,
-        "headers": {
-            "accept": "application/json",
-            "x-api-key": "***masked***"
-        },
-    }
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=30,
+        )
 
+        return response, {
+            "url": url,
+            "headers": {
+                "accept": "application/json",
+                "x-api-key": "***masked***"
+            },
+        }
+
+    except requests.RequestException as e:
+
+        return None, {
+            "error": str(e)
+        }
+
+
+# ============================================================
+# TECHNOLOGY EXTRACTION
+# ============================================================
 
 def _walk_for_technology_objects(
     value,
@@ -1166,6 +1523,7 @@ def _walk_for_technology_objects(
 ):
 
     if results is None:
+
         results = []
 
     if isinstance(value, dict):
@@ -1185,6 +1543,7 @@ def _walk_for_technology_objects(
             ):
 
                 if isinstance(item, str):
+
                     new_category = item
 
             _walk_for_technology_objects(
@@ -1213,7 +1572,10 @@ def _walk_for_technology_objects(
             or ""
         )
 
-        if isinstance(name, str) and name.strip():
+        if (
+            isinstance(name, str)
+            and name.strip()
+        ):
 
             tech_context = any(
                 k in value
@@ -1229,12 +1591,15 @@ def _walk_for_technology_objects(
             if tech_context:
 
                 results.append({
+
                     "Technology": name.strip(),
+
                     "Category": (
                         str(category).strip()
                         if category
                         else "Uncategorized"
                     ),
+
                     "Technology UID": (
                         str(uid).strip()
                         if uid
@@ -1246,14 +1611,20 @@ def _walk_for_technology_objects(
 
         for item in value:
 
-            if isinstance(item, str) and item.strip():
+            if (
+                isinstance(item, str)
+                and item.strip()
+            ):
 
                 results.append({
+
                     "Technology": item.strip(),
+
                     "Category": (
                         category_hint
                         or "Uncategorized"
                     ),
+
                     "Technology UID": ""
                 })
 
@@ -1268,7 +1639,9 @@ def _walk_for_technology_objects(
     return results
 
 
-def extract_technology_rows(*apollo_payloads):
+def extract_technology_rows(
+    *apollo_payloads
+):
 
     found = []
 
@@ -1301,18 +1674,24 @@ def extract_technology_rows(*apollo_payloads):
 
                     value = org.get(key)
 
-                    if isinstance(value, list):
+                    if isinstance(
+                        value,
+                        list
+                    ):
 
                         for item in value:
 
-                            if isinstance(
-                                item,
-                                str
-                            ) and item.strip():
+                            if (
+                                isinstance(item, str)
+                                and item.strip()
+                            ):
 
                                 found.append({
+
                                     "Technology": item.strip(),
+
                                     "Category": "Uncategorized",
+
                                     "Technology UID": ""
                                 })
 
@@ -1326,7 +1705,9 @@ def extract_technology_rows(*apollo_payloads):
             ]
         )
 
-    df = pd.DataFrame(found)
+    df = pd.DataFrame(
+        found
+    )
 
     for col in [
         "Technology",
@@ -1335,6 +1716,7 @@ def extract_technology_rows(*apollo_payloads):
     ]:
 
         if col not in df.columns:
+
             df[col] = ""
 
     df["Technology"] = (
@@ -1380,6 +1762,10 @@ def extract_technology_rows(*apollo_payloads):
     return df
 
 
+# ============================================================
+# GENERIC APOLLO HELPERS
+# ============================================================
+
 def _first_value(
     data,
     *keys,
@@ -1387,6 +1773,7 @@ def _first_value(
 ):
 
     if not isinstance(data, dict):
+
         return default
 
     for key in keys:
@@ -1451,9 +1838,7 @@ def render_company_360(
     apollo_data,
     exact_name,
     domain,
-    technology_data=None,
-    persona_data=None,
-    persona_provider="Lusha"
+    technology_data=None
 ):
 
     st.markdown(
@@ -1461,8 +1846,8 @@ def render_company_360(
     )
 
     st.caption(
-        "Company intelligence is driven by the selected Lusha company/domain. "
-        "Apollo enrichment is active."
+        "Company intelligence is driven by the selected "
+        "Lusha company/domain and Apollo enrichment."
     )
 
     org = {}
@@ -1531,7 +1916,9 @@ def render_company_360(
 
     c1.metric(
         "Employees",
-        _format_number(employee_count)
+        _format_number(
+            employee_count
+        )
     )
 
     c2.metric(
@@ -1541,17 +1928,15 @@ def render_company_360(
 
     c3.metric(
         "Annual Revenue",
-        _format_money(revenue)
+        _format_money(
+            revenue
+        )
     )
 
     c4.metric(
         "Founded",
         founded
     )
-
-    # --------------------------------------------------------
-    # IDENTITY
-    # --------------------------------------------------------
 
     st.markdown(
         "### 🔎 Company Identity"
@@ -1607,10 +1992,6 @@ def render_company_360(
         hide_index=True
     )
 
-    # --------------------------------------------------------
-    # LOCATIONS
-    # --------------------------------------------------------
-
     locations = org.get(
         "locations"
     )
@@ -1641,24 +2022,29 @@ def render_company_360(
                 loc,
                 dict
             ):
+
                 continue
 
             location_rows.append({
+
                 "Location": _first_value(
                     loc,
                     "raw_address",
                     "street_address",
                     "address"
                 ),
+
                 "City": _first_value(
                     loc,
                     "city"
                 ),
+
                 "State": _first_value(
                     loc,
                     "state",
                     "state_name"
                 ),
+
                 "Country": _first_value(
                     loc,
                     "country",
@@ -1673,7 +2059,9 @@ def render_company_360(
             )
 
             st.dataframe(
-                pd.DataFrame(location_rows),
+                pd.DataFrame(
+                    location_rows
+                ),
                 use_container_width=True,
                 hide_index=True
             )
@@ -1688,10 +2076,6 @@ def render_company_360(
             str(headquarters)
         )
 
-    # --------------------------------------------------------
-    # FUNDING
-    # --------------------------------------------------------
-
     st.markdown(
         "### 💰 Corporate & Funding"
     )
@@ -1702,10 +2086,10 @@ def render_company_360(
         or []
     )
 
-    if isinstance(
-        funding,
-        list
-    ) and funding:
+    if (
+        isinstance(funding, list)
+        and funding
+    ):
 
         funding_rows = []
 
@@ -1715,15 +2099,18 @@ def render_company_360(
                 item,
                 dict
             ):
+
                 continue
 
             funding_rows.append({
+
                 "Round": _first_value(
                     item,
                     "type",
                     "round",
                     "name"
                 ),
+
                 "Amount": _format_money(
                     _first_value(
                         item,
@@ -1732,11 +2119,13 @@ def render_company_360(
                         default="Not available"
                     )
                 ),
+
                 "Date": _first_value(
                     item,
                     "date",
                     "announced_date"
                 ),
+
                 "Investors": _first_value(
                     item,
                     "investors",
@@ -1747,7 +2136,9 @@ def render_company_360(
         if funding_rows:
 
             st.dataframe(
-                pd.DataFrame(funding_rows),
+                pd.DataFrame(
+                    funding_rows
+                ),
                 use_container_width=True,
                 hide_index=True
             )
@@ -1755,7 +2146,7 @@ def render_company_360(
     else:
 
         st.info(
-            "No funding-round data returned by Apollo for this company."
+            "No funding-round data returned by Apollo."
         )
 
     parent = (
@@ -1823,10 +2214,6 @@ def render_company_360(
         hide_index=True
     )
 
-    # --------------------------------------------------------
-    # TECHNOLOGY
-    # --------------------------------------------------------
-
     st.markdown(
         "### 💻 Technology Intelligence"
     )
@@ -1877,9 +2264,7 @@ def render_company_360(
                     "Uncategorized"
                 )
             )
-            .groupby(
-                "Category"
-            )
+            .groupby("Category")
             .size()
             .reset_index(
                 name="Count"
@@ -1903,62 +2288,42 @@ def render_company_360(
     else:
 
         st.warning(
-            "Apollo did not return technology-stack fields in the organization payload. "
-            "The app will attempt Apollo Complete Organization Info when an organization ID is available."
+            "Apollo did not return technology-stack fields."
         )
-
-    # --------------------------------------------------------
-    # IT PERSONAS
-    # --------------------------------------------------------
 
     st.markdown(
         "### 👥 IT Personas"
     )
 
-    if (
-        isinstance(
-            persona_data,
-            pd.DataFrame
-        )
-        and not persona_data.empty
+    provider = st.session_state.get(
+        "people_provider",
+        "Lusha"
+    )
+
+    if st.session_state.get(
+        "persona_results"
     ):
 
-        st.success(
-            f"{len(persona_data):,} qualified IT persona(s) found using {persona_provider}."
+        persona_df = pd.DataFrame(
+            st.session_state[
+                "persona_results"
+            ]
         )
 
-        st.dataframe(
-            persona_data,
-            use_container_width=True,
-            hide_index=True,
-        )
+        if not persona_df.empty:
 
-        csv_bytes = persona_data.to_csv(
-            index=False
-        ).encode("utf-8")
-
-        st.download_button(
-            "⬇️ Download IT Personas CSV",
-            csv_bytes,
-            file_name=(
-                "it_personas_"
-                + persona_provider.lower()
-                + ".csv"
-            ),
-            mime="text/csv",
-            use_container_width=True,
-        )
+            st.dataframe(
+                persona_df,
+                use_container_width=True,
+                hide_index=True
+            )
 
     else:
 
         st.info(
-            f"No IT persona results loaded yet. "
-            f"Use Step 3 to search using {persona_provider}."
+            f"People provider selected: **{provider}**. "
+            "Click Step 3 below to fetch IT personas."
         )
-
-    # --------------------------------------------------------
-    # SOURCE STATUS
-    # --------------------------------------------------------
 
     st.markdown(
         "### 📚 Source Status"
@@ -1973,21 +2338,13 @@ def render_company_360(
             ],
             [
                 "Lusha",
-                "IT-person search",
-                (
-                    "Selected"
-                    if persona_provider == "Lusha"
-                    else "Available"
-                )
+                "IT People",
+                "Available"
             ],
             [
                 "ContactOut",
-                "IT-person / LinkedIn search",
-                (
-                    "Selected"
-                    if persona_provider == "ContactOut"
-                    else "Available"
-                )
+                "IT People / LinkedIn",
+                "Available"
             ],
             [
                 "Apollo",
@@ -2020,68 +2377,7 @@ def render_company_360(
 
 
 # ============================================================
-# DOMAIN CLEANING
-# ============================================================
-
-def clean_domain(value):
-
-    if value is None:
-        return ""
-
-    value = str(value).strip()
-
-    if not value or value.lower() in {
-        "nan",
-        "none",
-        "null"
-    }:
-        return ""
-
-    value = re.sub(
-        r"^https?://",
-        "",
-        value,
-        flags=re.IGNORECASE
-    )
-
-    value = (
-        value
-        .split("/")[0]
-        .split("?")[0]
-        .split("#")[0]
-    )
-
-    value = value.strip().lower()
-
-    value = value.removeprefix(
-        "www."
-    )
-
-    return value
-
-
-def first_nonempty(
-    *values,
-    default=""
-):
-
-    for value in values:
-
-        if value not in (
-            None,
-            "",
-            [],
-            {},
-            "nan"
-        ):
-
-            return value
-
-    return default
-
-
-# ============================================================
-# BULK APOLLO HELPERS
+# BULK HELPERS
 # ============================================================
 
 def flatten_apollo_company(
@@ -2153,7 +2449,9 @@ def flatten_apollo_company(
         ),
 
         "Employees": first_nonempty(
-            org.get("estimated_num_employees"),
+            org.get(
+                "estimated_num_employees"
+            ),
             org.get("num_employees"),
             default="Not available"
         ),
@@ -2232,7 +2530,8 @@ def flatten_apollo_company(
             ).get("name")
             if isinstance(
                 org.get(
-                    "owned_by_organization"
+                    "owned_by_organization",
+                    {}
                 ),
                 dict
             )
@@ -2249,7 +2548,8 @@ def flatten_apollo_company(
         "Status": (
             "Enriched"
             if org
-            else "No Apollo organization returned"
+            else
+            "No Apollo organization returned"
         ),
 
         "Error": "",
@@ -2257,7 +2557,7 @@ def flatten_apollo_company(
 
 
 # ============================================================
-# LUSHA BULK COMPANY RESOLUTION
+# LUSHA BULK RESOLUTION
 # ============================================================
 
 def resolve_lusha_company_for_bulk(
@@ -2267,10 +2567,7 @@ def resolve_lusha_company_for_bulk(
 
     if not company_name.strip():
 
-        return (
-            None,
-            "Company name is empty"
-        )
+        return None, "Company name is empty"
 
     try:
 
@@ -2281,22 +2578,24 @@ def resolve_lusha_company_for_bulk(
 
     except requests.RequestException as e:
 
-        return (
-            None,
+        return None, (
             f"Lusha connection error: {e}"
         )
 
     if response.status_code != 200:
 
         try:
+
             body = response.json()
 
         except Exception:
+
             body = response.text[:300]
 
-        return (
-            None,
-            f"Lusha HTTP {response.status_code}: {body}"
+        return None, (
+            f"Lusha HTTP "
+            f"{response.status_code}: "
+            f"{body}"
         )
 
     try:
@@ -2312,12 +2611,15 @@ def resolve_lusha_company_for_bulk(
 
     if not values:
 
-        return (
-            None,
+        return None, (
             "No Lusha company match"
         )
 
-    target = company_name.strip().lower()
+    target = (
+        company_name
+        .strip()
+        .lower()
+    )
 
     exact = next(
         (
@@ -2325,10 +2627,12 @@ def resolve_lusha_company_for_bulk(
             for x in values
             if str(
                 x.get("name", "")
-            ).strip().lower()
+            )
+            .strip()
+            .lower()
             == target
         ),
-        values[0]
+        values[0],
     )
 
     domain = clean_domain(
@@ -2354,7 +2658,6 @@ def resolve_lusha_company_for_bulk(
             "id",
             ""
         ),
-
     }, ""
 
 
@@ -2387,12 +2690,14 @@ def bulk_apollo_enrich(
 
         return (
             None,
-            {"error": str(e)}
+            {
+                "error": str(e)
+            }
         )
 
 
 # ============================================================
-# BULK FILE PREPARATION
+# PREPARE BULK DATAFRAME
 # ============================================================
 
 def prepare_bulk_dataframe(
@@ -2420,6 +2725,7 @@ def prepare_bulk_dataframe(
             )
 
         last_error = None
+
         df = None
 
         for encoding in (
@@ -2454,7 +2760,8 @@ def prepare_bulk_dataframe(
         if df is None:
 
             raise ValueError(
-                f"Could not parse CSV: {last_error}"
+                f"Could not parse CSV: "
+                f"{last_error}"
             )
 
         if len(df.columns) == 1:
@@ -2497,6 +2804,7 @@ def prepare_bulk_dataframe(
                             break
 
                     except Exception:
+
                         pass
 
     else:
@@ -2538,9 +2846,11 @@ def prepare_bulk_dataframe(
     }
 
     company_col = None
+
     domain_col = None
 
     company_candidates = [
+
         "company",
         "company name",
         "organization",
@@ -2551,6 +2861,7 @@ def prepare_bulk_dataframe(
     ]
 
     domain_candidates = [
+
         "domain",
         "company domain",
         "website",
@@ -2587,10 +2898,12 @@ def prepare_bulk_dataframe(
 
             if (
                 "company" in norm_name
-                or "organization" in norm_name
+                or "organization"
+                in norm_name
             ):
 
                 company_col = original
+
                 break
 
     if domain_col is None:
@@ -2604,6 +2917,7 @@ def prepare_bulk_dataframe(
             ):
 
                 domain_col = original
+
                 break
 
     if (
@@ -2612,9 +2926,10 @@ def prepare_bulk_dataframe(
     ):
 
         raise ValueError(
-            "Could not find a Company or Domain column. "
-            f"Detected columns: {', '.join(map(str, df.columns))}. "
-            "Use headers like Company, Company Name, Domain, Website or URL."
+            "Could not find a Company or "
+            "Domain column. "
+            f"Detected columns: "
+            f"{', '.join(map(str, df.columns))}."
         )
 
     work = pd.DataFrame(
@@ -2704,23 +3019,27 @@ def prepare_bulk_dataframe(
         lambda r:
         r["Input Domain"]
         if r["Input Domain"]
-        else r["Input Company"]
+        else
+        r["Input Company"]
         .strip()
         .lower(),
 
-        axis=1
+        axis=1,
     )
 
     work = (
         work[
-            work["_dedupe_key"] != ""
+            work["_dedupe_key"]
+            != ""
         ]
         .drop_duplicates(
             "_dedupe_key",
             keep="first"
         )
         .drop(
-            columns=["_dedupe_key"]
+            columns=[
+                "_dedupe_key"
+            ]
         )
         .reset_index(
             drop=True
@@ -2730,7 +3049,8 @@ def prepare_bulk_dataframe(
     if work.empty:
 
         raise ValueError(
-            "No usable company/domain rows were found in the uploaded file."
+            "No usable company/domain rows "
+            "were found."
         )
 
     return work
@@ -2754,7 +3074,10 @@ def run_bulk_processing(
         base_df
     )
 
-    for idx, (_, source_row) in enumerate(
+    for idx, (
+        _,
+        source_row
+    ) in enumerate(
         base_df.iterrows(),
         start=1
     ):
@@ -2774,9 +3097,13 @@ def run_bulk_processing(
             )
         )
 
-        resolved_name = input_company
+        resolved_name = (
+            input_company
+        )
 
-        domain = input_domain
+        domain = (
+            input_domain
+        )
 
         lusha_used = False
 
@@ -2786,9 +3113,11 @@ def run_bulk_processing(
             in selected_companies
         ):
 
-            selection = selected_companies[
-                input_company
-            ]
+            selection = (
+                selected_companies[
+                    input_company
+                ]
+            )
 
             resolved_name = (
                 selection.get("name")
@@ -2814,6 +3143,7 @@ def run_bulk_processing(
             if not lusha_key.strip():
 
                 result = {
+
                     **{
                         c: source_row.get(
                             c,
@@ -2827,15 +3157,21 @@ def run_bulk_processing(
                         or "Not available"
                     ),
 
-                    "Domain": "Not available",
+                    "Domain": (
+                        "Not available"
+                    ),
 
-                    "Data Source":
-                        "Lusha/Apollo",
+                    "Data Source": (
+                        "Lusha/Apollo"
+                    ),
 
                     "Status": "Skipped",
 
-                    "Error":
-                        "Domain missing and Lusha API key is not configured.",
+                    "Error": (
+                        "Domain missing and "
+                        "Lusha API key is not "
+                        "configured."
+                    ),
                 }
 
                 rows.append(
@@ -2843,6 +3179,7 @@ def run_bulk_processing(
                 )
 
                 if progress_callback:
+
                     progress_callback(
                         idx,
                         total
@@ -2873,6 +3210,7 @@ def run_bulk_processing(
             else:
 
                 result = {
+
                     **{
                         c: source_row.get(
                             c,
@@ -2886,17 +3224,15 @@ def run_bulk_processing(
                         or "Not available"
                     ),
 
-                    "Domain":
-                        "Not available",
+                    "Domain": (
+                        "Not available"
+                    ),
 
-                    "Data Source":
-                        "Lusha",
+                    "Data Source": "Lusha",
 
-                    "Status":
-                        "Failed",
+                    "Status": "Failed",
 
-                    "Error":
-                        error,
+                    "Error": error,
                 }
 
                 rows.append(
@@ -2904,6 +3240,7 @@ def run_bulk_processing(
                 )
 
                 if progress_callback:
+
                     progress_callback(
                         idx,
                         total
@@ -2914,6 +3251,7 @@ def run_bulk_processing(
         if not domain:
 
             result = {
+
                 **{
                     c: source_row.get(
                         c,
@@ -2927,17 +3265,17 @@ def run_bulk_processing(
                     or "Not available"
                 ),
 
-                "Domain":
-                    "Not available",
+                "Domain": (
+                    "Not available"
+                ),
 
-                "Data Source":
-                    "Lusha",
+                "Data Source": "Lusha",
 
-                "Status":
-                    "Failed",
+                "Status": "Failed",
 
-                "Error":
-                    "No domain found for this company.",
+                "Error": (
+                    "No domain found."
+                ),
             }
 
             rows.append(
@@ -2945,6 +3283,7 @@ def run_bulk_processing(
             )
 
             if progress_callback:
+
                 progress_callback(
                     idx,
                     total
@@ -2975,8 +3314,10 @@ def run_bulk_processing(
 
                 apollo_json = {}
 
-            tech_df = extract_technology_rows(
-                apollo_json
+            tech_df = (
+                extract_technology_rows(
+                    apollo_json
+                )
             )
 
             org = (
@@ -3028,7 +3369,8 @@ def run_bulk_processing(
                     if (
                         complete_response
                         is not None
-                        and complete_response.status_code
+                        and
+                        complete_response.status_code
                         == 200
                     ):
 
@@ -3044,19 +3386,21 @@ def run_bulk_processing(
                         )
 
                         tech_source = (
-                            "Apollo Complete Organization Info"
+                            "Apollo Complete "
+                            "Organization Info"
                         )
 
                     elif (
                         complete_response
                         is not None
-                        and complete_response.status_code
+                        and
+                        complete_response.status_code
                         in (401, 403)
                     ):
 
                         tech_source = (
-                            "Complete Org unavailable "
-                            f"(HTTP {complete_response.status_code})"
+                            "Complete Org "
+                            "unavailable"
                         )
 
                 except Exception:
@@ -3083,9 +3427,11 @@ def run_bulk_processing(
                     resolved_name,
 
                 "Lusha Used":
-                    "Yes"
-                    if lusha_used
-                    else "No",
+                    (
+                        "Yes"
+                        if lusha_used
+                        else "No"
+                    ),
 
                 "Technology Count":
                     len(tech_df),
@@ -3098,24 +3444,30 @@ def run_bulk_processing(
                             ].tolist()
                         )
                         if not tech_df.empty
-                        else "Not available"
+                        else
+                        "Not available"
                     ),
 
                 "Technology Source":
                     (
                         tech_source
                         if not tech_df.empty
-                        else "Not available"
+                        else
+                        "Not available"
                     ),
             }
 
         else:
 
             status = (
+
                 f"Apollo HTTP "
                 f"{response.status_code}"
+
                 if response is not None
-                else "Apollo connection error"
+
+                else
+                "Apollo connection error"
             )
 
             if response is not None:
@@ -3135,15 +3487,19 @@ def run_bulk_processing(
             else:
 
                 error_body = (
+
                     request_info.get(
                         "error",
                         "Unknown error"
                     )
+
                     if isinstance(
                         request_info,
                         dict
                     )
-                    else "Unknown error"
+
+                    else
+                    "Unknown error"
                 )
 
             result = {
@@ -3156,31 +3512,35 @@ def run_bulk_processing(
                     for c in base_df.columns
                 },
 
-                "Company":
+                "Company": (
                     resolved_name
                     or input_company
-                    or "Not available",
+                    or "Not available"
+                ),
 
-                "Domain":
+                "Domain": (
                     domain
-                    or "Not available",
+                    or "Not available"
+                ),
 
                 "Lusha Resolved Name":
                     resolved_name,
 
                 "Lusha Used":
-                    "Yes"
-                    if lusha_used
-                    else "No",
+                    (
+                        "Yes"
+                        if lusha_used
+                        else "No"
+                    ),
 
-                "Data Source":
-                    "Apollo",
+                "Data Source": "Apollo",
 
-                "Status":
-                    "Failed",
+                "Status": "Failed",
 
-                "Error":
-                    f"{status}: {error_body}",
+                "Error": (
+                    f"{status}: "
+                    f"{error_body}"
+                ),
             }
 
             rows.append(
@@ -3188,6 +3548,7 @@ def run_bulk_processing(
             )
 
             if progress_callback:
+
                 progress_callback(
                     idx,
                     total
@@ -3200,9 +3561,10 @@ def run_bulk_processing(
             ):
 
                 raise RuntimeError(
-                    f"Apollo authentication/permission failure "
-                    f"({response.status_code}). "
-                    "Bulk processing stopped. Check the Apollo API key and API scope."
+                    "Apollo authentication/"
+                    "permission failure. "
+                    "Check the Apollo API key "
+                    "and API scope."
                 )
 
             continue
@@ -3212,6 +3574,7 @@ def run_bulk_processing(
         )
 
         if progress_callback:
+
             progress_callback(
                 idx,
                 total
@@ -3233,15 +3596,17 @@ def render_bulk_processing():
     )
 
     st.caption(
-        "Upload companies → resolve Lusha matches → select exact company/domain "
-        "→ Apollo enrichment. No automatic top-domain selection."
+        "Upload companies → resolve Lusha matches → "
+        "select exact company/domain → Apollo enrichment."
     )
 
     template = pd.DataFrame({
+
         "Company": [
             "Denave",
             "Motherhood Hospital"
         ],
+
         "Domain": [
             "",
             ""
@@ -3249,41 +3614,53 @@ def render_bulk_processing():
     })
 
     st.download_button(
+
         "⬇️ Download CSV template",
+
         template.to_csv(
             index=False
         ).encode("utf-8"),
-        file_name="company_bulk_template.csv",
+
+        file_name=(
+            "company_bulk_template.csv"
+        ),
+
         mime="text/csv",
     )
 
     uploaded = st.file_uploader(
+
         "Upload company list",
+
         type=[
             "csv",
             "xlsx",
             "xls"
         ],
+
         key="bulk_company_uploader",
+
         help=(
             "Recommended column: Company. "
-            "Domain is optional; you will select/confirm "
-            "the exact domain before processing."
+            "Domain is optional."
         ),
     )
 
     if not uploaded:
 
         st.info(
-            "Upload your company list to start bulk processing."
+            "Upload your company list "
+            "to start bulk processing."
         )
 
         return
 
     try:
 
-        base_df = prepare_bulk_dataframe(
-            uploaded
+        base_df = (
+            prepare_bulk_dataframe(
+                uploaded
+            )
         )
 
     except Exception as e:
@@ -3295,7 +3672,8 @@ def render_bulk_processing():
         return
 
     st.success(
-        f"Loaded {len(base_df):,} unique companies."
+        f"Loaded {len(base_df):,} "
+        "unique companies."
     )
 
     st.dataframe(
@@ -3305,15 +3683,21 @@ def render_bulk_processing():
     )
 
     st.warning(
-        "Credit safety: bulk mode NEVER fetches Lusha or ContactOut people. "
-        "Lusha is used only to resolve/select the exact company record; "
-        "Apollo is used for company enrichment."
+        "Bulk company enrichment uses "
+        "Lusha for company resolution and "
+        "Apollo for company enrichment. "
+        "People fetching is not automatically "
+        "performed during bulk company processing."
     )
 
     current_signature = (
+
         f"{uploaded.name}:"
         f"{len(base_df)}:"
-        f"{','.join(base_df['Input Company'].astype(str).tolist()[:20])}"
+        f"{','.join("
+        f"base_df['Input Company']"
+        f".astype(str)"
+        f".tolist()[:20])}"
     )
 
     if (
@@ -3339,10 +3723,6 @@ def render_bulk_processing():
             "bulk_results"
         ] = None
 
-    # --------------------------------------------------------
-    # STEP 1
-    # --------------------------------------------------------
-
     st.markdown(
         "### 1️⃣ Find Lusha Company Matches"
     )
@@ -3355,7 +3735,8 @@ def render_bulk_processing():
         if not api_key.strip():
 
             st.error(
-                "Enter your Lusha API key in the sidebar first."
+                "Enter your Lusha API key "
+                "in the sidebar first."
             )
 
             return
@@ -3390,7 +3771,8 @@ def render_bulk_processing():
                 if response.status_code == 200:
 
                     values = (
-                        response.json()
+                        response
+                        .json()
                         .get(
                             "values",
                             []
@@ -3412,7 +3794,8 @@ def render_bulk_processing():
 
                     errors.append(
                         f"{input_company}: "
-                        f"Lusha HTTP {response.status_code}"
+                        f"Lusha HTTP "
+                        f"{response.status_code}"
                     )
 
             except requests.RequestException as e:
@@ -3452,10 +3835,6 @@ def render_bulk_processing():
         {}
     )
 
-    # --------------------------------------------------------
-    # STEP 2
-    # --------------------------------------------------------
-
     if matches:
 
         st.markdown(
@@ -3463,9 +3842,9 @@ def render_bulk_processing():
         )
 
         st.info(
-            "For every company, select the Lusha record you want. "
-            "The selected domain will be the domain sent to Apollo. "
-            "The first/top Lusha result is NOT automatically used."
+            "For every company, select the "
+            "Lusha record you want. The selected "
+            "domain will be sent to Apollo."
         )
 
         if st.session_state.get(
@@ -3476,15 +3855,22 @@ def render_bulk_processing():
                 "⚠️ Resolution warnings"
             ):
 
-                for err in st.session_state[
-                    "bulk_resolution_errors"
-                ]:
+                for err in (
+                    st.session_state[
+                        "bulk_resolution_errors"
+                    ]
+                ):
 
-                    st.write(err)
+                    st.write(
+                        err
+                    )
 
         selections = {}
 
-        for row_index, (_, source_row) in enumerate(
+        for row_index, (
+            _,
+            source_row
+        ) in enumerate(
             base_df.iterrows()
         ):
 
@@ -3509,7 +3895,8 @@ def render_bulk_processing():
             )
 
             st.markdown(
-                f"#### {row_index + 1}. {input_company}"
+                f"#### {row_index + 1}. "
+                f"{input_company}"
             )
 
             options = []
@@ -3524,10 +3911,13 @@ def render_bulk_processing():
                 )
 
                 option_meta.append({
+
                     "name":
                         input_company,
+
                     "domain":
                         input_domain,
+
                     "lusha_used":
                         False,
                 })
@@ -3552,29 +3942,37 @@ def render_bulk_processing():
                     or ""
                 )
 
-                has_contacts = company.get(
-                    "has_prospecting_contacts",
-                    False
+                has_contacts = (
+                    company.get(
+                        "has_prospecting_contacts",
+                        False
+                    )
                 )
 
                 options.append(
+
                     f"🏢 {name} | "
                     f"{domain or 'No domain'} | "
                     f"{'✅ Contacts available' if has_contacts else '❌ No contacts'}"
                 )
 
                 option_meta.append({
+
                     "name":
                         name,
+
                     "domain":
                         domain,
+
                     "lusha_used":
                         True,
+
                     "lusha_id":
                         company.get(
                             "id",
                             ""
                         ),
+
                     "has_contacts":
                         has_contacts,
                 })
@@ -3584,21 +3982,32 @@ def render_bulk_processing():
             )
 
             option_meta.append({
+
                 "name":
                     input_company,
+
                 "domain":
                     "",
+
                 "lusha_used":
                     False,
+
                 "manual_domain":
                     True,
             })
 
             selected_option = st.radio(
+
                 "Select exact record / domain source",
-                range(len(options)),
+
+                range(
+                    len(options)
+                ),
+
                 format_func=lambda x,
-                options=options: options[x],
+                options=options:
+                    options[x],
+
                 key=(
                     f"bulk_exact_company_"
                     f"{row_index}"
@@ -3620,14 +4029,11 @@ def render_bulk_processing():
                 )
             ):
 
-                manual_key = (
-                    f"bulk_manual_domain_"
-                    f"{row_index}"
-                )
-
                 manual_value = st.text_input(
+
                     "Company Website / Domain "
                     "(required for Apollo)",
+
                     value=(
                         input_domain
                         if selected.get(
@@ -3635,11 +4041,14 @@ def render_bulk_processing():
                         )
                         else ""
                     ),
-                    placeholder="example.com",
-                    key=manual_key,
-                    help=(
-                        "Enter the company's official "
-                        "website domain."
+
+                    placeholder=(
+                        "example.com"
+                    ),
+
+                    key=(
+                        f"bulk_manual_domain_"
+                        f"{row_index}"
                     ),
                 )
 
@@ -3661,8 +4070,8 @@ def render_bulk_processing():
                 else:
 
                     st.warning(
-                        "This company has no usable domain "
-                        "from Lusha. Enter the official domain manually."
+                        "Enter the official "
+                        "company domain."
                     )
 
             selections[
@@ -3670,9 +4079,9 @@ def render_bulk_processing():
             ] = selected
 
             st.caption(
-                f"Selected → "
+                "Selected → "
                 f"**{selected['name']}** | "
-                f"Domain → "
+                "Domain → "
                 f"**{selected['domain'] or 'Not available'}**"
             )
 
@@ -3691,7 +4100,9 @@ def render_bulk_processing():
         if selections:
 
             confirmation = pd.DataFrame([
+
                 {
+
                     "Input Company":
                         company,
 
@@ -3713,7 +4124,8 @@ def render_bulk_processing():
                             if item.get(
                                 "lusha_used"
                             )
-                            else "No"
+                            else
+                            "No"
                         ),
                 }
 
@@ -3737,6 +4149,7 @@ def render_bulk_processing():
             )
 
             missing_domains = [
+
                 company
 
                 for company, item
@@ -3744,8 +4157,7 @@ def render_bulk_processing():
 
                 if not clean_domain(
                     item.get(
-                        "domain",
-                        ""
+                        "domain"
                     )
                 )
             ]
@@ -3753,7 +4165,7 @@ def render_bulk_processing():
             if not can_run:
 
                 st.error(
-                    "Enter your Apollo API key in the sidebar before processing."
+                    "Enter your Apollo API key."
                 )
 
             if (
@@ -3769,19 +4181,29 @@ def render_bulk_processing():
                 )
 
             if st.button(
-                "🚀 Confirm & Process Selected Companies",
+
+                "🚀 Confirm & Process "
+                "Selected Companies",
+
                 type="primary",
+
                 use_container_width=True,
+
                 disabled=(
                     not can_run
                     or not all_selected
-                    or bool(missing_domains)
+                    or bool(
+                        missing_domains
+                    )
                 ),
             ):
 
                 progress = st.progress(
                     0,
-                    text="Starting company enrichment..."
+                    text=(
+                        "Starting company "
+                        "enrichment..."
+                    )
                 )
 
                 status_box = st.empty()
@@ -3806,8 +4228,9 @@ def render_bulk_processing():
                         text=(
                             f"Processing "
                             f"{done:,} / "
-                            f"{total:,} companies"
-                        ),
+                            f"{total:,} "
+                            "companies"
+                        )
                     )
 
                     status_box.caption(
@@ -3823,10 +4246,12 @@ def render_bulk_processing():
                             base_df,
                             api_key,
                             apollo_api_key,
-                            selected_companies=
-                                selections,
-                            progress_callback=
-                                update_progress,
+                            selected_companies=(
+                                selections
+                            ),
+                            progress_callback=(
+                                update_progress
+                            ),
                         )
                     )
 
@@ -3837,7 +4262,8 @@ def render_bulk_processing():
                     progress.progress(
                         100,
                         text=(
-                            "Bulk processing completed"
+                            "Bulk processing "
+                            "completed"
                         )
                     )
 
@@ -3858,13 +4284,9 @@ def render_bulk_processing():
                     progress.empty()
 
                     st.error(
-                        "Bulk processing stopped unexpectedly: "
-                        f"{e}"
+                        "Bulk processing stopped "
+                        f"unexpectedly: {e}"
                     )
-
-    # --------------------------------------------------------
-    # RESULTS
-    # --------------------------------------------------------
 
     results = st.session_state.get(
         "bulk_results"
@@ -3890,22 +4312,25 @@ def render_bulk_processing():
             (
                 results[
                     "Status"
-                ].astype(str)
+                ]
+                .astype(str)
                 == "Enriched"
             ).sum()
         ) if "Status" in results else 0
 
         failed = int(
-            results[
-                "Status"
-            ].astype(str)
-            .isin(
-                [
-                    "Failed",
-                    "Skipped"
+            (
+                results[
+                    "Status"
                 ]
-            )
-            .sum()
+                .astype(str)
+                .isin(
+                    [
+                        "Failed",
+                        "Skipped"
+                    ]
+                )
+            ).sum()
         ) if "Status" in results else 0
 
         x, y, z = st.columns(3)
@@ -3933,17 +4358,24 @@ def render_bulk_processing():
 
         csv_bytes = (
             results
-            .to_csv(index=False)
+            .to_csv(
+                index=False
+            )
             .encode("utf-8")
         )
 
         st.download_button(
+
             "⬇️ Download Results CSV",
+
             csv_bytes,
+
             file_name=(
                 "company_360_bulk_results.csv"
             ),
+
             mime="text/csv",
+
             use_container_width=True,
         )
 
@@ -3965,22 +4397,27 @@ def render_bulk_processing():
                 )
 
             st.download_button(
+
                 "⬇️ Download Results Excel",
+
                 output.getvalue(),
+
                 file_name=(
                     "company_360_bulk_results.xlsx"
                 ),
+
                 mime=(
-                    "application/vnd.openxmlformats-officedocument."
-                    "spreadsheetml.sheet"
+                    "application/vnd.openxmlformats-"
+                    "officedocument.spreadsheetml.sheet"
                 ),
+
                 use_container_width=True,
             )
 
         except Exception:
 
             st.caption(
-                "Excel export unavailable in this environment; "
+                "Excel export unavailable; "
                 "CSV export is available."
             )
 
@@ -3994,8 +4431,8 @@ st.title(
 )
 
 st.caption(
-    "Company name → exact Lusha company → domain → "
-    "Company 360 intelligence → IT Personas"
+    "Company name → exact Lusha company → "
+    "domain → Company 360 → IT Personas"
 )
 
 st.warning(
@@ -4013,111 +4450,120 @@ st.sidebar.header(
 )
 
 api_key = st.sidebar.text_input(
+
     "Lusha API Key",
+
     value=os.getenv(
         "LUSHA_API_KEY",
         ""
     ),
+
     type="password"
 )
 
 
-# ============================================================
-# CONTACTOUT
-# ============================================================
-
 st.sidebar.header(
-    "👤 IT Person Provider"
+    "👤 IT People Provider"
 )
 
-persona_provider = st.sidebar.radio(
+people_provider = st.sidebar.radio(
+
     "Choose provider",
+
     [
         "Lusha",
         "ContactOut"
     ],
+
     index=0,
+
     help=(
-        "Choose which provider should be used "
-        "for IT-person discovery. Company resolution "
-        "continues to use Lusha."
+        "Lusha uses the Lusha contact "
+        "prospecting API. ContactOut uses "
+        "ContactOut People Search and does "
+        "not request email/phone reveal."
     )
 )
 
+st.session_state[
+    "people_provider"
+] = people_provider
+
+
 contactout_api_key = ""
 
-if persona_provider == "ContactOut":
+if people_provider == "ContactOut":
 
     contactout_api_key = st.sidebar.text_input(
+
         "ContactOut API Key",
+
         value=os.getenv(
             "CONTACTOUT_API_KEY",
             ""
         ),
+
         type="password",
+
         help=(
-            "Used only for IT-person / LinkedIn search. "
-            "Email and phone reveal are disabled."
+            "ContactOut API token. "
+            "People Search is used only for "
+            "profile/LinkedIn discovery."
         )
     )
 
-    st.sidebar.info(
-        "ContactOut mode searches profiles with "
-        "reveal_info=False. Email and phone are not requested."
-    )
-
-
-# ============================================================
-# APOLLO
-# ============================================================
 
 st.sidebar.header(
     "🚀 Apollo"
 )
 
 apollo_api_key = st.sidebar.text_input(
+
     "Apollo API Key",
+
     value=os.getenv(
         "APOLLO_API_KEY",
         ""
     ),
+
     type="password",
+
     help=(
-        "Used only for Apollo Organization Enrichment. "
-        "No Apollo people enrichment is called."
+        "Used only for Apollo Organization "
+        "Enrichment."
     )
 )
 
-
-# ============================================================
-# COMPANY
-# ============================================================
 
 st.sidebar.header(
     "🏢 Company"
 )
 
 company_name = st.sidebar.text_input(
+
     "Company Name",
-    placeholder="Motherhood Hospital"
+
+    placeholder=(
+        "Motherhood Hospital"
+    )
 )
 
-
-# ============================================================
-# LOCATION
-# ============================================================
 
 st.sidebar.header(
     "📍 Optional Company Location"
 )
 
 use_location = st.sidebar.checkbox(
+
     "Use company location filter",
+
     value=False
 )
 
 company_country = ""
+
 company_state = ""
+
 company_city = ""
 
 if use_location:
@@ -4139,12 +4585,15 @@ if use_location:
 
 
 # ============================================================
-# STEP 1
+# STEP 1 BUTTON
 # ============================================================
 
 find_company_button = st.sidebar.button(
+
     "1️⃣ Find Company",
+
     type="primary",
+
     use_container_width=True
 )
 
@@ -4193,7 +4642,7 @@ if find_company_button:
     if response.status_code != 200:
 
         st.error(
-            f"Lusha returned HTTP "
+            "Lusha returned HTTP "
             f"{response.status_code}"
         )
 
@@ -4221,7 +4670,8 @@ if find_company_button:
     if not values:
 
         st.error(
-            "Lusha did not return any company matches."
+            "Lusha did not return "
+            "any company matches."
         )
 
         st.json(
@@ -4235,7 +4685,8 @@ if find_company_button:
     ] = values
 
     st.success(
-        f"Found {len(values)} company matches."
+        f"Found {len(values)} "
+        "company matches."
     )
 
 
@@ -4258,9 +4709,7 @@ if (
 
     labels = []
 
-    for i, company in enumerate(
-        matches
-    ):
+    for company in matches:
 
         name = company.get(
             "name",
@@ -4283,22 +4732,31 @@ if (
         )
 
         contact_status = (
+
             "✅ Prospecting contacts available"
+
             if has_contacts
-            else "❌ No prospecting contacts"
+
+            else
+
+            "❌ No prospecting contacts"
         )
 
         labels.append(
+
             f"{name} | "
             f"{domain} | "
             f"{contact_status}"
         )
 
     selected_index = st.radio(
+
         "Company matches",
+
         range(
             len(labels)
         ),
+
         format_func=lambda x:
             labels[x]
     )
@@ -4313,13 +4771,19 @@ if (
     )
 
     domain = (
+
         selected_company.get(
             "domains_homepage"
         )
-        or selected_company.get(
+
+        or
+
+        selected_company.get(
             "fqdn"
         )
+
         or ""
+
     )
 
     company_id = selected_company.get(
@@ -4349,7 +4813,7 @@ if (
     )
 
     c3.write(
-        f"**Prospecting Contacts:** "
+        "**Lusha Prospecting Contacts:** "
         f"{'YES' if has_contacts else 'NO'}"
     )
 
@@ -4366,8 +4830,11 @@ if (
     )
 
     company360_button = st.button(
+
         "2️⃣ Load Company 360",
+
         type="primary",
+
         use_container_width=True,
     )
 
@@ -4377,8 +4844,9 @@ if (
 
             st.warning(
                 "Apollo API key is not entered. "
-                "Company 360 will still show the selected company, "
-                "but Apollo enrichment cannot run."
+                "Company 360 will show the "
+                "selected company but Apollo "
+                "enrichment cannot run."
             )
 
             st.session_state[
@@ -4409,8 +4877,11 @@ if (
                         apollo_response,
                         apollo_request
                     ) = apollo_org_enrich(
+
                         apollo_api_key,
+
                         domain,
+
                         exact_name,
                     )
 
@@ -4421,8 +4892,6 @@ if (
                     )
 
                     apollo_response = None
-
-                    apollo_request = None
 
             if apollo_response is not None:
 
@@ -4446,32 +4915,43 @@ if (
                     )
 
                     org_for_id = (
+
                         apollo_json.get(
                             "organization"
                         )
+
                         if isinstance(
                             apollo_json,
                             dict
                         )
+
                         else {}
                     )
 
                     org_for_id = (
+
                         org_for_id
+
                         if isinstance(
                             org_for_id,
                             dict
                         )
+
                         else {}
                     )
 
                     org_id = (
+
                         org_for_id.get(
                             "id"
                         )
-                        or org_for_id.get(
+
+                        or
+
+                        org_for_id.get(
                             "organization_id"
                         )
+
                         or ""
                     )
 
@@ -4487,7 +4967,9 @@ if (
                     ):
 
                         with st.spinner(
-                            "Checking Apollo Complete Organization Info for technology stack..."
+                            "Checking Apollo "
+                            "Complete Organization "
+                            "Info for technology stack..."
                         ):
 
                             try:
@@ -4495,24 +4977,30 @@ if (
                                 (
                                     complete_response,
                                     _
-                                ) = apollo_complete_org(
-                                    apollo_api_key,
-                                    org_id
+                                ) = (
+                                    apollo_complete_org(
+                                        apollo_api_key,
+                                        org_id
+                                    )
                                 )
 
                                 if (
                                     complete_response
                                     is not None
-                                    and complete_response.status_code
+                                    and
+                                    complete_response.status_code
                                     == 200
                                 ):
 
                                     complete_json = (
-                                        complete_response.json()
+                                        complete_response
+                                        .json()
                                     )
 
                                     technology_payload = {
+
                                         **apollo_json,
+
                                         "_complete_organization":
                                             complete_json,
                                     }
@@ -4520,7 +5008,7 @@ if (
                                     tech_df = (
                                         extract_technology_rows(
                                             apollo_json,
-                                            complete_json,
+                                            complete_json
                                         )
                                     )
 
@@ -4531,7 +5019,8 @@ if (
                                 elif (
                                     complete_response
                                     is not None
-                                    and complete_response.status_code
+                                    and
+                                    complete_response.status_code
                                     in (401, 403)
                                 ):
 
@@ -4540,11 +5029,10 @@ if (
                                     ] = None
 
                                     st.info(
-                                        "Apollo Complete Organization Info "
-                                        f"returned HTTP "
-                                        f"{complete_response.status_code}; "
-                                        "technology stack may require "
-                                        "additional Apollo API scope."
+                                        "Apollo Complete "
+                                        "Organization Info "
+                                        "requires additional "
+                                        "API scope."
                                     )
 
                             except Exception as tech_error:
@@ -4554,7 +5042,8 @@ if (
                                 ] = None
 
                                 st.info(
-                                    "Technology lookup was unavailable: "
+                                    "Technology lookup "
+                                    f"was unavailable: "
                                     f"{tech_error}"
                                 )
 
@@ -4575,13 +5064,14 @@ if (
                     ] = exact_name
 
                     st.success(
-                        "Apollo organization enrichment completed."
+                        "Apollo organization "
+                        "enrichment completed."
                     )
 
                 else:
 
                     st.error(
-                        f"Apollo returned HTTP "
+                        "Apollo returned HTTP "
                         f"{apollo_response.status_code}."
                     )
 
@@ -4597,10 +5087,6 @@ if (
                             apollo_response.text
                         )
 
-    # ========================================================
-    # COMPANY 360 DISPLAY
-    # ========================================================
-
     if (
         st.session_state.get(
             "company360_name"
@@ -4609,47 +5095,57 @@ if (
     ):
 
         render_company_360(
+
             st.session_state.get(
                 "company360_data"
             ),
+
             exact_name,
+
             st.session_state.get(
                 "company360_domain",
                 domain
             ),
+
             st.session_state.get(
                 "company360_tech"
-            ),
-            st.session_state.get(
-                "persona_data"
-            ),
-            st.session_state.get(
-                "persona_provider",
-                persona_provider
             ),
         )
 
     # ========================================================
-    # STEP 3 — IT PERSONA FETCH
+    # STEP 3 — IT PERSONAS
     # ========================================================
 
     st.markdown(
         "### Step 3 — IT Persona Fetch"
     )
 
-    st.caption(
-        f"Current provider: **{persona_provider}**"
+    provider = (
+        st.session_state.get(
+            "people_provider",
+            "Lusha"
+        )
     )
 
-    fetch_personas_button = st.button(
-        f"3️⃣ Fetch IT Personas using {persona_provider}",
+    provider_label = (
+        "Lusha"
+        if provider == "Lusha"
+        else "ContactOut"
+    )
+
+    fetch_button = st.button(
+
+        f"3️⃣ Fetch IT Personas "
+        f"with {provider_label}",
+
         type="primary",
+
         use_container_width=True,
     )
 
-    if fetch_personas_button:
+    if fetch_button:
 
-        if persona_provider == "Lusha":
+        if provider == "Lusha":
 
             if not api_key.strip():
 
@@ -4659,283 +5155,211 @@ if (
 
                 st.stop()
 
-        else:
+        elif provider == "ContactOut":
 
             if not contactout_api_key.strip():
 
                 st.error(
-                    "Enter your ContactOut API key."
+                    "Enter your ContactOut "
+                    "API key."
                 )
 
                 st.stop()
 
         with st.spinner(
-            f"Searching IT personas using {persona_provider}..."
+            f"Fetching IT personas from "
+            f"{provider_label}..."
         ):
 
-            try:
+            (
+                persona_rows,
+                persona_response,
+                persona_payload,
+                persona_error
+            ) = fetch_it_personas(
 
-                if persona_provider == "Lusha":
+                provider,
 
-                    response, request_payload = (
-                        find_contacts(
-                            api_key,
-                            exact_name,
-                            domain,
-                            (
-                                company_country
-                                if use_location
-                                else ""
-                            ),
-                            (
-                                company_state
-                                if use_location
-                                else ""
-                            ),
-                            (
-                                company_city
-                                if use_location
-                                else ""
-                            ),
-                        )
+                lusha_api_key=api_key,
+
+                contactout_api_key=(
+                    contactout_api_key
+                ),
+
+                exact_company_name=(
+                    exact_name
+                ),
+
+                company_domain=(
+                    domain
+                ),
+
+                company_country=(
+                    company_country
+                ),
+
+                company_state=(
+                    company_state
+                ),
+
+                company_city=(
+                    company_city
+                ),
+            )
+
+        if persona_error:
+
+            st.error(
+                persona_error
+            )
+
+            if (
+                persona_response is not None
+                and
+                persona_response.status_code
+                == 403
+            ):
+
+                st.warning(
+                    "The provider rejected "
+                    "the request. Check API "
+                    "access and remaining credits."
+                )
+
+        else:
+
+            st.session_state[
+                "persona_results"
+            ] = persona_rows
+
+            st.session_state[
+                "persona_provider_used"
+            ] = provider
+
+            if persona_rows:
+
+                persona_df = pd.DataFrame(
+                    persona_rows
+                )
+
+                qualified_df = (
+                    persona_df[
+                        persona_df[
+                            "Qualified"
+                        ] == True
+                    ]
+                    if "Qualified"
+                    in persona_df.columns
+                    else
+                    persona_df
+                )
+
+                st.success(
+                    f"{provider_label} returned "
+                    f"{len(persona_rows)} "
+                    "profiles."
+                )
+
+                if qualified_df.empty:
+
+                    st.warning(
+                        f"{provider_label} returned "
+                        "profiles, but none matched "
+                        "your existing IT persona rules."
                     )
 
-                    if response.status_code != 200:
-
-                        st.error(
-                            "Lusha contact search returned "
-                            f"HTTP {response.status_code}."
-                        )
-
-                        try:
-
-                            st.json(
-                                response.json()
-                            )
-
-                        except Exception:
-
-                            st.code(
-                                response.text
-                            )
-
-                    else:
-
-                        contact_data = (
-                            response.json()
-                        )
-
-                        raw_contacts = (
-                            extract_contacts(
-                                contact_data
-                            )
-                        )
-
-                        normalized = []
-
-                        for contact in raw_contacts:
-
-                            item = normalize_contact(
-                                contact
-                            )
-
-                            if item:
-
-                                normalized.append(
-                                    item
-                                )
-
-                        qualified = (
-                            filter_persona_contacts(
-                                normalized
-                            )
-                        )
-
-                        persona_df = pd.DataFrame(
-                            qualified
-                        )
-
-                        st.session_state[
-                            "persona_data"
-                        ] = persona_df
-
-                        st.session_state[
-                            "persona_provider"
-                        ] = "Lusha"
-
-                        if persona_df.empty:
-
-                            st.warning(
-                                "Lusha returned contacts, "
-                                "but none matched your IT persona rules."
-                            )
-
-                        else:
-
-                            st.success(
-                                f"Found {len(persona_df):,} "
-                                "qualified IT persona(s) using Lusha."
-                            )
+                    st.info(
+                        "The raw returned profiles "
+                        "are shown below so you can "
+                        "see their actual titles."
+                    )
 
                 else:
 
-                    response, request_payload = (
-                        find_contacts_contactout(
-                            contactout_api_key,
-                            exact_name,
-                            domain,
-                            (
-                                company_country
-                                if use_location
-                                else ""
-                            ),
-                            (
-                                company_state
-                                if use_location
-                                else ""
-                            ),
-                            (
-                                company_city
-                                if use_location
-                                else ""
-                            ),
-                            page_size=25
-                        )
+                    st.success(
+                        f"Found "
+                        f"{len(qualified_df)} "
+                        "qualified IT personas."
                     )
 
-                    if response.status_code != 200:
-
-                        st.error(
-                            "ContactOut people search returned "
-                            f"HTTP {response.status_code}."
-                        )
-
-                        try:
-
-                            st.json(
-                                response.json()
-                            )
-
-                        except Exception:
-
-                            st.code(
-                                response.text
-                            )
-
-                    else:
-
-                        contact_data = (
-                            response.json()
-                        )
-
-                        raw_contacts = (
-                            extract_contactout_profiles(
-                                contact_data
-                            )
-                        )
-
-                        normalized = []
-
-                        for contact in raw_contacts:
-
-                            item = (
-                                normalize_contactout_contact(
-                                    contact,
-                                    exact_name,
-                                    domain
-                                )
-                            )
-
-                            if item:
-
-                                normalized.append(
-                                    item
-                                )
-
-                        qualified = (
-                            filter_persona_contacts(
-                                normalized
-                            )
-                        )
-
-                        persona_df = pd.DataFrame(
-                            qualified
-                        )
-
-                        st.session_state[
-                            "persona_data"
-                        ] = persona_df
-
-                        st.session_state[
-                            "persona_provider"
-                        ] = "ContactOut"
-
-                        if persona_df.empty:
-
-                            st.warning(
-                                "ContactOut returned profiles, "
-                                "but none matched your existing IT persona rules."
-                            )
-
-                        else:
-
-                            st.success(
-                                f"Found {len(persona_df):,} "
-                                "qualified IT persona(s) using ContactOut."
-                            )
-
-            except requests.RequestException as e:
-
-                st.error(
-                    f"{persona_provider} connection error: {e}"
+                st.dataframe(
+                    persona_df,
+                    use_container_width=True,
+                    hide_index=True
                 )
 
-            except Exception as e:
+                # --------------------------------------------
+                # QUALIFIED ONLY
+                # --------------------------------------------
 
-                st.error(
-                    f"IT persona search failed: {e}"
+                if not qualified_df.empty:
+
+                    st.markdown(
+                        "#### 🎯 Qualified IT Personas"
+                    )
+
+                    st.dataframe(
+                        qualified_df,
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                    csv_bytes = (
+                        qualified_df
+                        .to_csv(
+                            index=False
+                        )
+                        .encode("utf-8")
+                    )
+
+                    st.download_button(
+
+                        "⬇️ Download IT Personas CSV",
+
+                        csv_bytes,
+
+                        file_name=(
+                            f"{clean_domain(domain)}"
+                            "_it_personas.csv"
+                        ),
+
+                        mime="text/csv",
+
+                        use_container_width=True,
+                    )
+
+            else:
+
+                st.warning(
+                    f"{provider_label} returned "
+                    "no profiles for this search."
                 )
 
-    # --------------------------------------------------------
-    # SHOW PERSON RESULTS IMMEDIATELY
-    # --------------------------------------------------------
+    # ========================================================
+    # EXISTING RESULTS
+    # ========================================================
 
-    persona_results = (
-        st.session_state.get(
-            "persona_data"
-        )
-    )
-
-    if (
-        isinstance(
-            persona_results,
-            pd.DataFrame
-        )
-        and not persona_results.empty
+    if st.session_state.get(
+        "persona_results"
     ):
 
         st.markdown(
-            f"### 👥 IT Personas — "
-            f"{st.session_state.get('persona_provider', persona_provider)}"
+            "### 👥 Current IT Persona Results"
         )
 
-        st.dataframe(
-            persona_results,
-            use_container_width=True,
-            hide_index=True
+        current_df = pd.DataFrame(
+            st.session_state[
+                "persona_results"
+            ]
         )
 
-        st.download_button(
-            "⬇️ Download IT Personas CSV",
-            persona_results.to_csv(
-                index=False
-            ).encode("utf-8"),
-            file_name=(
-                "it_personas.csv"
-            ),
-            mime="text/csv",
-            use_container_width=True
-        )
+        if not current_df.empty:
+
+            st.dataframe(
+                current_df,
+                use_container_width=True,
+                hide_index=True
+            )
 
 
 # ============================================================
@@ -4945,3 +5369,4 @@ if (
 st.divider()
 
 render_bulk_processing()
+```
