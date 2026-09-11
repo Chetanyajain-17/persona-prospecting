@@ -3689,7 +3689,11 @@ def render_bulk_processing():
         "performed during bulk company processing."
     )
 
-   current_signature = ( f"{uploaded.name}:" f"{len(base_df)}:" f"{','.join(base_df['Input Company'].astype(str).tolist()[:20])}" )
+   current_signature = ( 
+                        f"{uploaded.name}:" 
+                        f"{len(base_df)}:" 
+                        f"{','.join(base_df['Input Company'].astype(str).tolist()[:20])}" 
+   )
 
     if (
         st.session_state.get(
