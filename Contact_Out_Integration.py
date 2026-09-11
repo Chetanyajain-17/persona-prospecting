@@ -1,4 +1,3 @@
-```python
 import os
 import re
 import requests
@@ -5369,4 +5368,4 @@ if (
 st.divider()
 
 render_bulk_processing()
-```
+
